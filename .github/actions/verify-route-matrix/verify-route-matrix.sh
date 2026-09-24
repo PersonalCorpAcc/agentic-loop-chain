@@ -497,6 +497,16 @@ else
       echo "FAIL: agent-implement.md declares HARNESS_GIT_IDENTITY as '${identity}', which is not 'Name <email>'" >&2
       ;;
   esac
+
+  # The pipeline's first precondition is its specification tool. Only the OpenCode engine's
+  # import used to install it, so under every other engine the kit refused each run with
+  # `missing-tool`. The worker installs it itself now, and this is the installed-copy check.
+  if grep -qE 'npm install -g "@fission-ai/openspec@[0-9.]+"' "$IMPLEMENT_WORKER"; then
+    PASS=$((PASS + 1))
+  else
+    FAIL=$((FAIL + 1))
+    echo "FAIL: agent-implement.md does not install the specification tool the pipeline requires" >&2
+  fi
 fi
 
 echo "── Safe-output overrides (FR-052) ────────────────────────────────────────"
