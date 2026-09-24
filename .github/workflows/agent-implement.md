@@ -599,6 +599,25 @@ steps:
       issue-number: ${{ inputs.issue-number }}
       output-path: ${{ env.ISSUE_CONTEXT_PATH }}
 
+# The pipeline refuses to start without its specification tool, and it is right to: every phase
+# after exploration writes through it. It used to arrive only through the OpenCode engine's own
+# import, so under any other engine the tool was never there, and the kit's precondition stopped
+# every standard-path run with `missing-tool` before it wrote a line -- observed on the first
+# Claude Code run of the unattended mode, 24/09/2026. This worker is the only one whose
+# capabilities call the tool, so it installs it itself, on the host before the agent starts:
+# a global install under the runner's Node lands on a path the agent's container can read.
+# Pinned to the version the OpenCode import pins, and skipped when that import has already run.
+pre-agent-steps:
+  - name: Install the specification tool the pipeline requires
+    run: |
+      set -euo pipefail
+      if command -v openspec > /dev/null 2>&1 && openspec --version 2>/dev/null | grep -q "1.8.0"; then
+        echo "openspec 1.8.0 already installed"
+        exit 0
+      fi
+      npm install -g "@fission-ai/openspec@1.8.0"
+      openspec --version
+
 safe-outputs:
   # A failed run is already visible as a red run. An issue per failure buries the
   # real backlog under noise that nobody closes.
