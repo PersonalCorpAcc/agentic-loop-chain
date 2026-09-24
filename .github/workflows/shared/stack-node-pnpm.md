@@ -9,8 +9,6 @@ pre-agent-steps:
     uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
   - name: Set up Node for pnpm
     uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
-    with:
-      cache: pnpm
 ---
 
 Setup for the node-pnpm toolchain. Ecosystem facts only: this file carries no
