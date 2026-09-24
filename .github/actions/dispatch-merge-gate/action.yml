@@ -1,0 +1,62 @@
+# Managed by @plainconceptsplatform/workflows@0.5.1. Source: loops/actions/dispatch-merge-gate/action.yml. Profile digest: 08448fbaf1f8. Update with `workflows update --force`; consumer edits may be overwritten.
+name: Dispatch merge gate
+description: >-
+  Hand a bot pull request's CI verdict to the merge gate from inside CI. A bot pull request is
+  opened with GITHUB_TOKEN, and GitHub delivers no workflow_run event for the CI runs that
+  follow, so the router's CI-completion route never sees them. workflow_dispatch is one of the
+  two events GITHUB_TOKEN may raise, so no App token is needed, and the router treats a dispatch
+  as trusted. Human pull requests are left to the workflow_run route, which does fire for them.
+  The reconcile belt remains the hourly fallback.
+inputs:
+  results:
+    description: >-
+      The results of every job the verdict depends on, space-separated. A composite action has
+      no needs context, so the calling job passes join(needs.*.result, ' ') and this action
+      reduces it. Any failure is a failure; a cancellation is a superseded run and dispatches
+      nothing, because the newer push's own run will.
+    required: true
+  pr-number:
+    description: The pull request the verdict is for.
+    required: true
+  run-id:
+    description: This CI run, so the gate can name the evidence it acted on.
+    required: true
+  ref:
+    description: >-
+      The ref the router is dispatched at. The repository default branch, not the pull
+      request's branch: a dispatch runs the workflow file at that ref, and the router on a
+      feature branch could be stale or absent.
+    required: true
+  token:
+    description: A token that may dispatch workflows. GITHUB_TOKEN is enough.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Dispatch the merge gate with this run's verdict
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        REPO: ${{ github.repository }}
+        REF: ${{ inputs.ref }}
+        PR_NUMBER: ${{ inputs.pr-number }}
+        RUN_ID: ${{ inputs.run-id }}
+        RESULTS: ${{ inputs.results }}
+      run: |
+        set -euo pipefail
+        conclusion=success
+        for result in $RESULTS; do
+          case "$result" in
+            failure) conclusion=failure; break ;;
+            cancelled | timed_out) conclusion=cancelled ;;
+          esac
+        done
+        # A cancelled run was superseded by a newer push, whose own run dispatches.
+        if [ "$conclusion" = cancelled ]; then
+          echo "CI was cancelled; not dispatching the merge gate."
+          exit 0
+        fi
+        echo "Dispatching the merge gate for PR #$PR_NUMBER with CI $conclusion (run $RUN_ID)."
+        gh workflow run work-router.yml --repo "$REPO" --ref "$REF" \
+          -f operation=merge-gate -f pr-number="$PR_NUMBER" \
+          -f ci-conclusion="$conclusion" -f ci-run-id="$RUN_ID"

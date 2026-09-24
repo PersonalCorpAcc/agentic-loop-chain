@@ -1,0 +1,270 @@
+# Managed by @plainconceptsplatform/workflows@0.5.1. Source: loops/actions/identify-gate-subject/action.yml. Profile digest: 08448fbaf1f8. Update with workflows update --force; consumer edits may be overwritten.
+name: Identify gate subject
+description: Confirm the pull request is one we authored, resolve the issue it closes, and check that issue carries the required label.
+inputs:
+  token:
+    description: GitHub token with issues and pull-requests read access.
+    required: true
+  pr-number:
+    description: Pull request number to gate.
+    required: true
+  ci-run-id:
+    description: >
+      The CI run the caller already knows about, when it knows one. A dispatch from the CI
+      template or from the reconcile belt carries it, and without it the failing logs cannot
+      be fetched: the derivation below only runs when the conclusion is missing, which is
+      never the case for those callers (T247).
+    required: false
+    default: ""
+  ci-conclusion:
+    description: Conclusion reported by the CI run that triggered this gate. If empty, fetches from the PR's latest CI run.
+    required: false
+    default: ''
+  linked-issue:
+    description: Issue the pull request closes, when the router already resolved it.
+    required: false
+    default: ''
+  stage-labels:
+    description: >-
+      `stage=label` pairs, comma separated: the label an issue must carry for a pull request
+      targeting that stage. Selected by the pull request's own base, because a promotion into
+      the third stage and a fresh change into the first are both gated here and they are not
+      the same thing. Empty under a strategy with no chain, where require-label answers.
+    required: false
+    default: ''
+  require-label:
+    description: Label the closing issue must carry. Empty disables the check.
+    required: false
+    default: ''
+outputs:
+  found:
+    description: Whether a valid gate subject was found.
+    value: ${{ steps.identify.outputs.found }}
+  why-not:
+    description: >
+      One sentence saying which condition this pull request failed, when it failed one.
+      Empty when a subject was found. The alternative is a caller listing every condition it
+      might have been, which for a pull request this loop did open reads as a denial that it
+      did (FR-084).
+    value: ${{ steps.identify.outputs.why-not }}
+  pr:
+    description: Pull request number.
+    value: ${{ steps.identify.outputs.pr }}
+  issue:
+    description: >-
+      Issue number the pull request closes, or the first of them. Every reader that wants one
+      number -- the outcome line, the prompt's opening sentence -- reads this.
+    value: ${{ steps.identify.outputs.issue }}
+  issues:
+    description: >-
+      Every issue this pull request carries, one per line. Under `env-promotion` a promotion
+      pull request carries the set that merged into the stage below since the last promotion,
+      and there is no single issue to gate against (FR-056).
+    value: ${{ steps.identify.outputs.issues }}
+  promotion:
+    description: >-
+      `true` when this is a promotion pull request, which is a different subject: the
+      assessment and the verdict go on the pull request, and no issue label is touched,
+      because FR-051 owns those and it acts when the promotion merges.
+    value: ${{ steps.identify.outputs.promotion }}
+  comment-target:
+    description: >-
+      Where this run's assessment belongs: the pull request for a promotion, the issue for
+      everything else. One value rather than a condition repeated at every comment site.
+    value: ${{ steps.identify.outputs.comment-target }}
+  handover:
+    description: >-
+      `true` when the pull request is one this loop opened and the gate cannot assess it, so
+      it needs a person rather than silence. Distinct from `found=false`, which is "not a
+      subject" and is the ordinary answer for somebody else's pull request (FR-056).
+    value: ${{ steps.identify.outputs.handover }}
+  conclusion:
+    description: CI conclusion, passed through unchanged or fetched from latest CI run.
+    value: ${{ steps.identify.outputs.conclusion }}
+  base:
+    description: >-
+      The branch this pull request opens against. Read from the forge rather than taken from
+      the profile: a first-stage pull request and a promotion into a later stage are both
+      gated here, and only the pull request knows which of the strategy's branches it is
+      against (FR-027).
+    value: ${{ steps.identify.outputs.base }}
+  run-id:
+    description: CI run ID when fetched.
+    value: ${{ steps.identify.outputs.run-id }}
+runs:
+  using: composite
+  steps:
+    - name: Identify pull request and closing issue
+      id: identify
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        REPO: ${{ github.repository }}
+        PR_NUMBER: ${{ inputs.pr-number }}
+        CONCLUSION: ${{ inputs.ci-conclusion }}
+        RUN_ID_INPUT: ${{ inputs.ci-run-id }}
+        LINKED_ISSUE: ${{ inputs.linked-issue }}
+        REQUIRE_LABEL: ${{ inputs.require-label }}
+        STAGE_LABELS: ${{ inputs.stage-labels }}
+      run: |
+        set -euo pipefail
+
+        none() {
+          {
+            echo "found=false"
+            echo "why-not=$1"
+          } >>"$GITHUB_OUTPUT"
+          echo "$1"
+          exit 0
+        }
+
+        # Not a subject, and not nothing either.
+        #
+        # `none` is the right answer for a pull request the gate has no business assessing:
+        # somebody else's, or one aimed at a branch this loop does not promote through.
+        # A promotion whose carried issues do not all carry the stage below's label is a
+        # different thing entirely -- this loop opened it, it is carrying real work, and the
+        # reason it cannot be assessed is one only a person can resolve. Skipping it quietly
+        # would leave a pull request open on a stage with nothing anywhere saying why (FR-056).
+        handover() {
+          {
+            echo "found=false"
+            echo "handover=true"
+            echo "why-not=$1"
+          } >>"$GITHUB_OUTPUT"
+          echo "::warning::$1"
+          exit 0
+        }
+
+        pr="$(gh pr view "$PR_NUMBER" --repo "$REPO" \
+          --json state,author,body,baseRefName)"
+
+        [ "$(jq -r '.state' <<<"$pr")" = "OPEN" ] || none "PR #$PR_NUMBER is not open"
+
+        # Use GitHub's bot flag because App login formats differ across APIs.
+        if [ "$(jq -r '.author.is_bot' <<<"$pr")" != "true" ]; then
+          none "PR #$PR_NUMBER was authored by $(jq -r '.author.login' <<<"$pr"), a human."
+        fi
+
+        echo "base=$(jq -r '.baseRefName // ""' <<<"$pr")" >> "$GITHUB_OUTPUT"
+
+        # Is this a promotion? The marker is written by the promotion route and by nothing
+        # else, so it is the question's whole answer. Read before the issue, because under
+        # `env-promotion` a promotion carries a set and the single `linked-issue` the router
+        # resolved would name one of them and hide the rest (FR-031, FR-056).
+        body="$(jq -r '.body // ""' <<<"$pr")"
+        promotion=false
+        if grep -qE '<!-- promotion-pr: [^:]+: [^ ]+ -->' <<<"$body"; then promotion=true; fi
+        echo "promotion=$promotion" >> "$GITHUB_OUTPUT"
+
+        # shellcheck source=../resolve-pr-issue/resolve-pr-issue.sh
+        . "${GITHUB_ACTION_PATH}/../resolve-pr-issue/resolve-pr-issue.sh"
+
+        # The classifier resolved this once already and passed it down. When it did not --
+        # a dispatch, a label event -- the same rule answers here rather than a second
+        # spelling of it: marker first, then the forge's link, then a keyword (FR-030).
+        # A promotion asks the marker set regardless of what the router passed down, because
+        # one of several is the wrong answer rather than an incomplete one.
+        if [ "$promotion" = true ]; then
+          issues="$(pr_issues "$PR_NUMBER")"
+        else
+          issues="$LINKED_ISSUE"
+          [ -n "$issues" ] || issues="$(pr_issue "$PR_NUMBER")"
+        fi
+        issue="$(printf '%s' "$issues" | head -n1)"
+
+        [ -n "$issue" ] || none "PR #$PR_NUMBER belongs to no issue, so there is nothing to assess it against. A pull request this loop opens without one -- a stage synchronisation, say -- is a person's to merge."
+
+        {
+          echo "issues<<EOF_ISSUES"
+          printf '%s\n' "$issues"
+          echo "EOF_ISSUES"
+        } >> "$GITHUB_OUTPUT"
+
+        # A promotion's assessment goes on the pull request: it is about a set of changes
+        # travelling together, and posting it on one of their issues would attach it to the
+        # change that happened to be first. Everything else keeps the issue, where the full
+        # assessment has always lived (FR-056).
+        if [ "$promotion" = true ]; then
+          echo "comment-target=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+        else
+          echo "comment-target=$issue" >> "$GITHUB_OUTPUT"
+        fi
+
+        # Which label this pull request's base demands. The map wins where it has an entry,
+        # because it knows the difference between the first stage and the fourth; the single
+        # input answers when there is no chain at all, which is every trunk repository
+        # (FR-030).
+        base="$(jq -r '.baseRefName // ""' <<<"$pr")"
+        required="$REQUIRE_LABEL"
+        if [ -n "${STAGE_LABELS:-}" ]; then
+          required=""
+          while IFS= read -r pair; do
+            [ -n "$pair" ] || continue
+            case "$pair" in
+              "${base}="*) required="${pair#*=}" ;;
+            esac
+          done < <(printf '%s\n' "$STAGE_LABELS" | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+
+          if [ -z "$required" ]; then
+            none "PR #$PR_NUMBER targets '$base', which is not a stage this loop promotes through"
+          fi
+        fi
+
+        if [ -n "$required" ]; then
+          # Every carried issue, not the first. A promotion into `test` is only assessable if
+          # every change under it actually reached `dev`, and a set where one did not is a
+          # promotion carrying work that never passed the gate below -- which is the one thing
+          # the stage labels exist to make impossible (FR-056).
+          while IFS= read -r candidate; do
+            [ -n "$candidate" ] || continue
+            labels="$(gh issue view "$candidate" --repo "$REPO" --json labels \
+              --jq '[.labels[].name]')"
+
+            if jq -e --arg name "$required" 'index($name)' >/dev/null <<<"$labels"; then continue; fi
+
+            if [ "$promotion" = true ]; then
+              handover "PR #$PR_NUMBER promotes into '$base', but issue #$candidate -- one of the changes it carries -- does not carry $required (has: $(jq -r 'join(", ")' <<<"$labels")). A promotion is a snapshot and cannot leave that change behind, so this one needs a person."
+            fi
+            none "issue #$candidate does not carry $required, which a pull request into '$base' requires (has: $(jq -r 'join(", ")' <<<"$labels"))"
+          done <<< "$issues"
+        fi
+
+        # Fetch CI conclusion if not provided (label-triggered runs), and the run id
+        # whenever the caller did not supply one -- a conclusion with no run id is what the
+        # belt and the CI template send, and it left the agent with no logs at all (T247).
+        ci_conclusion="$CONCLUSION"
+        ci_run_id="${RUN_ID_INPUT:-}"
+        if [ -z "$ci_conclusion" ] || [ -z "$ci_run_id" ]; then
+          head_sha="$(gh pr view "$PR_NUMBER" --repo "$REPO" --json headRefOid --jq '.headRefOid')"
+          # Branch protection requires a check run by name, and a check run's name is a job's,
+          # not a workflow's. Reading the same check here is what makes "CI passed" mean one
+          # thing to the gate and to protection (FR-068). The check run names the workflow run
+          # it belongs to only in its URL, so the run id is read from there.
+          ci_run="$(gh api "repos/$REPO/commits/$head_sha/check-runs?per_page=100" \
+            --jq '[.check_runs[] | select(.name == "CI")] | sort_by(.started_at) | last')"
+          
+          if [ -n "$ci_run" ] && [ "$ci_run" != "null" ]; then
+            # A conclusion the caller gave is the caller's; only fill in what is missing.
+            [ -n "$ci_conclusion" ] || ci_conclusion="$(jq -r '.conclusion // "pending"' <<<"$ci_run")"
+            [ -n "$ci_run_id" ] || ci_run_id="$(jq -r '.html_url' <<<"$ci_run" | sed -n 's#.*/actions/runs/\([0-9][0-9]*\)/.*#\1#p')"
+            echo "::notice::Fetched CI status: $ci_conclusion (run $ci_run_id)"
+          else
+            ci_conclusion="unknown"
+            echo "::warning::No CI run found for PR #$PR_NUMBER"
+          fi
+        fi
+
+        {
+          echo "found=true"
+          echo "pr=$PR_NUMBER"
+          echo "issue=$issue"
+          echo "conclusion=$ci_conclusion"
+          echo "run-id=$ci_run_id"
+        } >> "$GITHUB_OUTPUT"
+
+        if [ "$promotion" = true ]; then
+          echo "PR #$PR_NUMBER promotes $(printf '%s' "$issues" | grep -c '[0-9]') issue(s) into '$base'; CI concluded $ci_conclusion"
+        else
+          echo "PR #$PR_NUMBER closes #$issue; CI concluded $ci_conclusion"
+        fi

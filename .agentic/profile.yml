@@ -1,0 +1,115 @@
+# The branch-chain proving ground. Everything the loop does here is projected from this
+# file, and nothing in the installed payload reads it at run time.
+#
+# `branch-chain` promotes one change at a time: once a change has landed on `dev`, the
+# promote route finds that change's own commits by patch-id, cherry-picks them onto a fresh
+# head cut from the next stage, and opens a pull request into it. Nothing else travels with
+# it. That is the difference from `env-promotion`, where a promotion is a snapshot of the
+# whole stage below. The canary ran this strategy until 21/09/2026 and was reprofiled; this
+# repository exists so that it did not have to be reprofiled a fourth time (T140, T137).
+version: 1
+name: loop-chain
+
+# Pinned rather than `ubuntu-latest`, for the same reason the canary pins: that label migrates
+# to Ubuntu 26 on 19/10/2026, and a runner image changing under a loop nobody is watching is
+# how a green repository goes red on a date nobody wrote down.
+runners:
+  agent: [ubuntu-24.04]
+  slim: [ubuntu-24.04]
+  ci: [ubuntu-24.04]
+
+llm:
+  engine: claude
+  model: claude-sonnet-5
+  secret: ANTHROPIC_API_KEY
+
+bot:
+  appLogin: personalcorpacc-agentic-loop[bot]
+  gitIdentity: personalcorpacc-agentic-loop[bot]
+  appIdSecret: BOT_APP_ID
+  keySecret: BOT_PRIVATE_KEY
+
+memory:
+  enabled: false
+codegraph:
+  enabled: false
+
+stack: [node-pnpm]
+projects:
+  - path: .
+    stack: node-pnpm
+    label: app
+    install: pnpm install --frozen-lockfile
+    build: pnpm run build
+    test: pnpm run test
+
+branching:
+  strategy: branch-chain
+  # The first stage, which is also the default. Cutting from `main` while stages land by
+  # different commits diverges them permanently, so every agent pull request's diff carries
+  # the install back with it and trips the protected-files rule -- measured on the canary, 4
+  # files would change and ~100 were reported (FR-086). Cut from the branch the pull request
+  # targets and `base..head` is the change and nothing else.
+  cutFrom: dev
+  chain: [dev, test, main]
+  # `rebase`, this strategy's conventional method, and here it is a mechanic: the promotion
+  # finds a change's commits on the next stage by patch-id, and a rebase landing keeps each
+  # commit's patch intact where a squash would fold several into one that matches none of
+  # them. The cost is that an agent cannot resolve a conflict, because the forge's rebase
+  # cannot replay the merge commit that would hold the resolution -- so conflicts go to a
+  # person, which is the default under this method (research R2).
+  mergeMethod: rebase
+  closeIssueOn: main
+  branchNaming: agent/{issue}-{run}
+  # Short, because a canary that soaked for a day would prove one promotion a day.
+  soak:
+    test: 5m
+    main: 5m
+  changelogOn: [main]
+  # Unattended into `dev` and `test`, so a change can be watched travelling on its own. `main`
+  # is absent on purpose: production is a person's to land, and saying so here means the loop
+  # declines even where the forge would allow it. The shipped default is `off`.
+  autoMerge:
+    mode: always
+    targets: [dev, test]
+
+# What the forge is asked to enforce, which is a different thing from what the loop does
+# (FR-085). Rendered by `workflows protection`, applied by a person, and checked by
+# `doctor --forge`. Nothing reads it at run time. A team, because an App can approve its own
+# pull request and satisfy "require one approval", and it cannot join a team.
+protection:
+  reviewers:
+    - team: agentic-team
+      approvals: 1
+      stages: [main]
+
+changelog:
+  path: CHANGELOG.json
+
+ci:
+  # One package and a test script, so the single-application template rather than the
+  # monorepo one, which wires in tools this repository does not use.
+  template: app-ci-node-app
+  workflowName: CI
+
+release:
+  versionSource: git-tag
+
+audit:
+  cronSlot: 3
+
+# The router's clocks. This repository is public, so hosted minutes cost nothing, and the
+# clocks that run no model are on: promotion is what this repository exists to watch, and a
+# chain whose promote clock is off promotes only when somebody remembers to dispatch it.
+# The agent-driven clocks stay off, because those spend the model key.
+crons:
+  audit: off
+  auditClose: off
+  cleanupArtifacts: off
+  reconcileBotPrRuns: "23 * * * *"
+  promote: "41 * * * *"
+  syncStages: off
+
+constitution:
+  entry: AGENTS.md
+  docs: [ARCHITECTURE.md]

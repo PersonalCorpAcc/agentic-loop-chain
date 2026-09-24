@@ -1,0 +1,129 @@
+# Managed by @plainconceptsplatform/workflows@0.5.1. Source: loops/actions/promote-change/action.yml. Profile digest: 08448fbaf1f8. Update with workflows update --force; consumer edits may be overwritten.
+name: Promote change
+description: >
+  Move the changes that are ready one stage along the chain: recreate the branch on the next
+  stage, cherry-pick the change's own commits, and open the pull request (FR-031). Runs no
+  model: which commits belong to a change and whether its soak has elapsed is arithmetic.
+inputs:
+  token:
+    description: An App installation token. It writes a branch and opens a pull request, so the workflow token will not do.
+    required: true
+  repo:
+    description: Target repository in owner/name format.
+    required: false
+    default: ${{ github.repository }}
+  stages:
+    description: The chain, in order, comma separated. Promotion is always from one entry to the next.
+    required: false
+    default: 'dev,test,main'
+  soak:
+    description: '`stage=duration` pairs: how long a change rests on the previous stage before this one takes it.'
+    required: false
+    default: 'main=5m,test=5m'
+  hold-label:
+    description: A change carrying this label is not promoted, whatever its soak says.
+    required: false
+    default: 'hold'
+  rollback-label:
+    description: A change carrying this label has been taken back out; it is not promoted again.
+    required: false
+    default: 'rollback'
+  hotfix-label:
+    description: A change carrying this label travels its own way.
+    required: false
+    default: 'hotfix'
+  merge-method:
+    description: How the forge merged the change onto the previous stage, which decides where its commits are found.
+    required: false
+    default: 'rebase'
+  branch-strategy:
+    description: The branching strategy, because env-promotion carries a snapshot rather than commits.
+    required: false
+    default: 'branch-chain'
+  branch-point:
+    description: The branch changes are cut from. Its commits are reachable from a pull request and are not part of the change.
+    required: false
+    default: 'dev'
+  release-pattern:
+    description: Extended regular expression matching release branches, so the guard refuses them as promotion heads.
+    required: false
+  release-template:
+    description: >
+      The name a release branch takes, with {version} filled in from the cadence. The
+      expression above recognises one; this produces one, which is the release-branch
+      strategy's whole promotion (FR-055).
+    required: false
+  cadence:
+    description: >
+      How often a release branch is cut, as daily, weekly, monthly or quarterly. It is what
+      names the period, which is what fills {version} in the template above.
+    required: false
+  snapshot-branch-template:
+    description: >
+      The name of the snapshot head under env-promotion, with {stage} and {sha} filled in.
+      The stage branch keeps moving, so a pull request opened from it would carry every merge
+      that landed afterwards, unsoaked and unchecked (FR-031).
+    required: false
+    default: 'promote/{stage}-{sha}'
+  title-prefix:
+    description: Prefix for the promotion pull request's title.
+    required: false
+    default: '[bot] '
+  changelog-path:
+    description: Path to the changelog document, from the profile. Empty keeps no changelog.
+    required: false
+    default: 'CHANGELOG.json'
+  changelog-stages:
+    description: Stages whose promotion records a changelog entry, from the profile.
+    required: false
+    default: 'main'
+outputs:
+  promoted:
+    description: How many promotion pull requests this run opened.
+    value: ${{ steps.promote.outputs.promoted }}
+  reason:
+    description: Why nothing moved, when nothing did, from the outcome enumeration.
+    value: ${{ steps.promote.outputs.reason }}
+runs:
+  using: composite
+  steps:
+    - name: Own the git identity for this job
+      shell: bash
+      env:
+        GIT_AUTHOR_NAME: 'personalcorpacc-agentic-loop[bot]'
+      run: |
+        set -euo pipefail
+        git config user.name "${GIT_AUTHOR_NAME}"
+        git config user.email "${GIT_AUTHOR_NAME}@users.noreply.github.com"
+    - name: Promote what is ready
+      id: promote
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        REPO: ${{ inputs.repo }}
+        STAGE_BRANCHES: ${{ inputs.stages }}
+        SOAK: ${{ inputs.soak }}
+        HOLD_LABEL: ${{ inputs.hold-label }}
+        ROLLBACK_LABEL: ${{ inputs.rollback-label }}
+        HOTFIX_LABEL: ${{ inputs.hotfix-label }}
+        RELEASE_PATTERN: ${{ inputs.release-pattern }}
+        RELEASE_TEMPLATE: ${{ inputs.release-template }}
+        CADENCE: ${{ inputs.cadence }}
+        MERGE_METHOD: ${{ inputs.merge-method }}
+        BRANCH_STRATEGY: ${{ inputs.branch-strategy }}
+        BRANCH_POINT: ${{ inputs.branch-point }}
+        SNAPSHOT_BRANCH_TEMPLATE: ${{ inputs.snapshot-branch-template }}
+        TITLE_PREFIX: ${{ inputs.title-prefix }}
+        CHANGELOG_PATH: ${{ inputs.changelog-path }}
+        CHANGELOG_STAGES: ${{ inputs.changelog-stages }}
+        DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        # The credential belongs to the git commands this script runs and to nothing else
+        # (FR-067).
+        GIT_TOKEN: ${{ inputs.token }}
+      run: |
+        set -euo pipefail
+        GIT_CONFIG_COUNT=1
+        GIT_CONFIG_KEY_0=http.extraheader
+        GIT_CONFIG_VALUE_0="Authorization: Basic $(printf 'x-access-token:%s' "$GIT_TOKEN" | base64 | tr -d '\n')"
+        export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
+        bash "${GITHUB_ACTION_PATH}/promote-change.sh"

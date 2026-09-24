@@ -1,0 +1,1979 @@
+# Managed by @plainconceptsplatform/workflows@0.5.1. Source: loops/workflows/work-router.yml. Profile digest: 08448fbaf1f8. Update with `workflows update --force`; consumer edits may be overwritten.
+name: "All Work Router"
+
+# Owns every repository automation trigger. Classifies each event into exactly one route,
+# then calls at most one worker or runs one deterministic job. No model runs here.
+
+# GitHub titles an issue-triggered run with the issue title, so every run on one issue reads
+# the same. Name it after the event instead. This is evaluated before any job, so it can
+# describe the trigger but not the route the classifier picks.
+run-name: >-
+  ${{ github.event_name == 'issues'
+  && github.event.action == 'opened'
+  && format('Issue opened: {0} (#{1}) by {2}', github.event.issue.title, github.event.issue.number, github.actor)
+  || github.event_name == 'issues'
+  && github.event.label.name == 'bot-working'
+  && contains(github.event.issue.labels.*.name, 'implement')
+  && format('Working (Implement): {0} (#{1})', github.event.issue.title, github.event.issue.number)
+  || github.event_name == 'issues'
+  && github.event.label.name == 'bot-working'
+  && contains(github.event.issue.labels.*.name, 'refine')
+  && format('Working (Refine): {0} (#{1})', github.event.issue.title, github.event.issue.number)
+  || github.event_name == 'issues'
+  && github.event.label.name == 'bot-working'
+  && contains(github.event.issue.labels.*.name, 'direct')
+  && format('Working (Direct): {0} (#{1})', github.event.issue.title, github.event.issue.number)
+  || github.event_name == 'issues'
+  && github.event.label.name == 'bot-working'
+  && contains(github.event.issue.labels.*.name, 'triage')
+  && format('Working (Triage): {0} (#{1})', github.event.issue.title, github.event.issue.number)
+  || github.event_name == 'issues'
+  && github.event.label.name == 'bot-working'
+  && format('Working: {0} (#{1})', github.event.issue.title, github.event.issue.number)
+  || github.event_name == 'issues'
+  && github.event.label.name == 'implement'
+  && endsWith(github.actor, '[bot]')
+  && format('Working (Implement): {0} (#{1})', github.event.issue.title, github.event.issue.number)
+  || github.event_name == 'issues'
+  && github.event.label.name == 'refine'
+  && endsWith(github.actor, '[bot]')
+  && format('Working (Refine): {0} (#{1})', github.event.issue.title, github.event.issue.number)
+  || github.event_name == 'issues'
+  && github.event.label.name == 'direct'
+  && endsWith(github.actor, '[bot]')
+  && format('Working (Direct): {0} (#{1})', github.event.issue.title, github.event.issue.number)
+  || github.event_name == 'issues'
+  && format('{0} label on #{1} by {2}', github.event.label.name, github.event.issue.number, github.actor)
+  || github.event_name == 'issue_comment'
+  && format('comment on #{0} by {1}', github.event.issue.number, github.actor)
+  || github.event_name == 'pull_request_review'
+  && format('review on PR #{0} by {1}', github.event.pull_request.number, github.actor)
+  || github.event_name == 'pull_request_review_comment'
+  && format('review comment on PR #{0} by {1}', github.event.pull_request.number, github.actor)
+  || github.event_name == 'pull_request_target'
+  && format('PR #{0} {1} by {2}', github.event.pull_request.number, github.event.action, github.actor)
+  || github.event_name == 'workflow_run'
+  && format('CI {0} on {1}', github.event.workflow_run.conclusion, github.event.workflow_run.head_branch)
+  || github.event_name == 'workflow_dispatch'
+  && inputs.operation == 'triage'
+  && format('Working (Triage): #{0}', inputs.issue-number)
+  || github.event_name == 'workflow_dispatch'
+  && inputs.operation == 'refine'
+  && format('Working (Refine): #{0}', inputs.issue-number)
+  || github.event_name == 'workflow_dispatch'
+  && inputs.operation == 'implement'
+  && format('Working (Implement): #{0}', inputs.issue-number)
+  || github.event_name == 'workflow_dispatch'
+  && inputs.operation == 'merge-gate'
+  && format('Working (Merge Gate): PR #{0}', inputs.pr-number)
+  || github.event_name == 'workflow_dispatch'
+  && inputs.operation == 'batch'
+  && format('Working (Batch): #{0}', inputs.issue-number)
+  || github.event_name == 'workflow_dispatch'
+  && format('dispatch: {0}', inputs.operation)
+  || github.event_name == 'schedule'
+  && format('schedule {0}', github.event.schedule)
+  || github.event_name }}
+
+on:
+  issues:
+    types: [opened, labeled]
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+  pull_request_review:
+    types: [submitted]
+
+  pull_request_target:
+    # opened / reopened / synchronize feed conflict detection (detect-pr-conflicts) and
+    # bot-approve. closed feeds detect-pr-conflicts: when a PR merges, the target branch
+    # moved and previously-mergeable sibling bot PRs may now conflict.
+    types: [opened, synchronize, reopened, labeled, closed]
+
+  # CI completion on a pull request. The classifier admits only conclusion == failure with an
+  # attached pull request; a green run reaches the gate through the consumer CI's
+  # dispatch-merge-gate job and the reconcile belt, so routing success here would double-fire
+  # the gate on every passing PR.
+  #
+  # Delivery (verified 2026-09-06 in Pliny-Bot): GitHub delivers workflow_run only for CI runs
+  # whose actor is a human. A bot pull request is opened with GITHUB_TOKEN, the CI runs that
+  # follow have the bot as their actor, and no workflow_run arrives for any of them (four
+  # human-actor runs produced four router runs; three bot-actor runs produced none). For bot
+  # pull requests the consumer CI's dispatch-merge-gate job (templates/ci) and the hourly
+  # reconcile-bot-pr-runs belt are the paths. Security: workflow_run runs from the default
+  # branch with secrets, but the gate's subject job rejects any PR that is not open and
+  # bot-authored, so a fork PR's failing CI cannot start privileged work.
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+  # Cron to route mapping lives in .github/actions/classify-route/classify-route.sh.
+  schedule:
+    # Every consumer installs this same file, and the agent fleet is one shared, two-VM scale
+    # set, so two repositories left on the same minute audit at the same minute. The slot is
+    # a profile value (`crons.audit`); see "Scheduling across repositories" in the package
+    # README for the organisation's table.
+    #
+    # Every one of these is projected from the same profile entry the classifier reads, so
+    # the two cannot disagree. They used to be literals in both files with a comment asking
+    # the reader to keep them in step, and a schedule that fires at a minute the classifier
+    # does not recognise routes nowhere: the run is green and the work never happens.
+    #
+    # Every line is optional, and a profile that sets a clock to `off` removes it here and
+    # the classifier's matching constant together, so a route cannot be fired by a schedule
+    # nothing answers to. Silencing used to be a hand edit that every reinstall undid without
+    # saying so (FR-081).
+    - cron: "23 * * * *"
+    - cron: "41 * * * *" # promotion; the line goes where there is nowhere to promote into (FR-031)
+
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: "Operation to run"
+        required: true
+        type: choice
+        options:
+          - refine
+          - implement
+          - triage
+          - apply-review
+          - merge-gate
+          - audit
+          - audit-close
+          - cleanup-artifacts
+          - promote
+          - sync-stages
+          - reconcile-bot-pr-runs
+          - validate
+          - release
+      issue-number:
+        description: "Issue number (required for refine / implement / direct)"
+        required: false
+        type: string
+      pr-number:
+        description: "Pull request number (required for apply-review / merge-gate)"
+        required: false
+        type: string
+      base-branch:
+        description: "Branch the pull request targets, for the merge belt's lock. Read from the pull request when it is omitted."
+        required: false
+        type: string
+      mode:
+        description: "Refine mode: first or rerefine"
+        required: false
+        type: choice
+        options:
+          - first
+          - rerefine
+      ci-conclusion:
+        description: "CI conclusion for merge-gate dispatch"
+        required: false
+        type: choice
+        options:
+          - success
+          - failure
+          - action_required
+      ci-run-id:
+        description: "CI workflow run ID for merge-gate dispatch"
+        required: false
+        type: string
+      attempts_so_far:
+        description: "Failed merge-gate attempts already made against this CI verdict (filled by the router, not by humans)"
+        required: false
+        type: string
+        default: '0'
+      trigger-kind:
+        description: "Audit trigger: scheduled or manual"
+        required: false
+        type: choice
+        options:
+          - manual
+          - scheduled
+      version-bump:
+        description: "Release version bump: patch, minor, major, or auto"
+        required: false
+        type: choice
+        options:
+          - auto
+          - patch
+          - minor
+          - major
+
+permissions:
+  contents: read
+
+jobs:
+  # Runs GitHub-hosted on purpose: its job is to say, in red, that the profile's own runners
+  # are not there, which a job queued on those runners can never do. A tier whose labels are
+  # all GitHub-hosted names has nothing to check. Organisation runners shared to this
+  # repository are not in the repository's runner list, so the organisation's is tried next,
+  # and an endpoint the token may not read makes the answer unverifiable rather than "offline"
+  # (FR-070, FR-058).
+  runner-preflight:
+    # The one job in this file that does not take the adopter's runner, and must not: it
+    # exists to say whether their fleet is online, and a job queued on an offline fleet
+    # never starts -- so the check that would have reported it would be the thing waiting.
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      OWNER: ${{ github.repository_owner }}
+      TIER_AGENT: "ubuntu-24.04"
+      TIER_SLIM: "ubuntu-24.04"
+      TIER_CI: "ubuntu-24.04"
+    steps:
+      - name: Assert an online runner per tier
+        run: |
+          set -euo pipefail
+          summary() { echo "$1" >> "$GITHUB_STEP_SUMMARY"; echo "$1"; }
+          hosted='^(ubuntu|windows|macos)-'
+          runners=""
+          source=""
+          for endpoint in "repos/$REPO/actions/runners" "orgs/$OWNER/actions/runners"; do
+            if out="$(gh api --paginate "$endpoint" --jq '.runners[] | select(.status == "online") | [.labels[].name] | join(",")' 2>/dev/null)"; then
+              source="$endpoint"
+              runners="$out"
+              [ -n "$runners" ] && break
+            fi
+          done
+          offline=""
+          for tier in "agent=$TIER_AGENT" "slim=$TIER_SLIM" "ci=$TIER_CI"; do
+            name="${tier%%=*}"; labels="${tier#*=}"
+            [ -n "$labels" ] || continue
+            self_hosted=false
+            for label in ${labels//,/ }; do
+              printf '%s' "$label" | grep -Eq "$hosted" || self_hosted=true
+            done
+            [ "$self_hosted" = true ] || continue
+            if [ -z "$source" ]; then
+              summary "outcome=no-action route=- subject=- reason=runner-unverifiable"
+              summary "Neither the repository's nor the organisation's runner list could be read with this token, so whether the $name tier is online is not known."
+              exit 0
+            fi
+            found=false
+            while IFS= read -r have; do
+              [ -n "$have" ] || continue
+              ok=true
+              for label in ${labels//,/ }; do
+                case ",$have," in *",$label,"*) ;; *) ok=false ;; esac
+              done
+              [ "$ok" = true ] && found=true
+            done <<<"$runners"
+            [ "$found" = true ] || offline="$offline $name($labels)"
+          done
+          if [ -n "$offline" ]; then
+            summary "outcome=failed route=- subject=- reason=runner-offline"
+            summary "No online runner carries every label of:$offline. Work routed to those tiers would queue with no runner to take it."
+            exit 1
+          fi
+          summary "outcome=no-action route=- subject=- reason=runners-online"
+          summary "Every self-hosted tier has an online runner."
+
+  # Public repositories must check repository permission before an event can start a model.
+  authorize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      trusted: ${{ steps.check.outputs.trusted }}
+      is_outside_collaborator: ${{ steps.check.outputs.is_outside_collaborator }}
+    steps:
+      - name: Check the actor can start an agent
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+
+          # Events with no human actor. `schedule` and `workflow_run` are the fleet triggering
+          # itself; `workflow_dispatch` is already restricted by GitHub to write and above.
+          case "$EVENT" in
+            schedule | workflow_run | workflow_dispatch)
+              echo "trusted=true" >> "$GITHUB_OUTPUT"
+              echo "is_outside_collaborator=false" >> "$GITHUB_OUTPUT"
+              echo "::notice::$EVENT has no untrusted actor."
+              exit 0
+              ;;
+          esac
+
+          # Platform bot owns Safe Outputs. Its label changes must be able to
+          # start the follow-on worker, even though GitHub does not report it
+          # as a repository collaborator.
+          if [ "$ACTOR" = "github-actions[bot]" ] || [ "$ACTOR" = "personalcorpacc-agentic-loop[bot]" ]; then
+            echo "trusted=true" >> "$GITHUB_OUTPUT"
+            echo "is_outside_collaborator=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          permission=$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$ACTOR/permission" \
+            --jq '.permission' 2>/dev/null || echo "none")
+
+          # Check if the actor is an organization member. Outside collaborators can have
+          # write/maintain permission on a repo without being org members. Triage is for
+          # outside collaborators only — a non-member with write access is still outside.
+          org=$(echo "$GITHUB_REPOSITORY" | cut -d/ -f1)
+          is_member=false
+          if gh api "orgs/$org/members/$ACTOR" >/dev/null 2>&1; then
+            is_member=true
+          fi
+
+          case "$permission" in
+            admin | maintain | write)
+              if [ "$is_member" = "true" ]; then
+                echo "trusted=true" >> "$GITHUB_OUTPUT"
+                echo "is_outside_collaborator=false" >> "$GITHUB_OUTPUT"
+                echo "::notice::$ACTOR has $permission permission and is an org member."
+              else
+                echo "trusted=true" >> "$GITHUB_OUTPUT"
+                echo "is_outside_collaborator=true" >> "$GITHUB_OUTPUT"
+                echo "::notice::$ACTOR has $permission permission but is NOT an org member (outside collaborator). Triage route eligible."
+              fi
+              ;;
+            read)
+              echo "trusted=false" >> "$GITHUB_OUTPUT"
+              echo "is_outside_collaborator=true" >> "$GITHUB_OUTPUT"
+              echo "::notice::$ACTOR is an outside collaborator (read permission). Triage route eligible."
+              ;;
+            *)
+              echo "trusted=false" >> "$GITHUB_OUTPUT"
+              echo "is_outside_collaborator=false" >> "$GITHUB_OUTPUT"
+              echo "::notice::$ACTOR has '$permission' permission on this repository. No agent will run."
+              ;;
+          esac
+      - name: Check out the outcome action
+        if: always()
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/actions/record-outcome
+      - name: Record the outcome
+        if: always()
+        uses: ./.github/actions/record-outcome
+        with:
+          outcome: ${{ steps.check.outputs.trusted == 'true' && 'acted' || 'no-action' }}
+          reason: ${{ steps.check.outputs.trusted == 'true' && 'clear-to-proceed' || 'not-authorised' }}
+          detail: "${{ steps.check.outputs.trusted == 'true' && format('{0} may start an agent on this repository.', github.actor) || format('{0} may not start an agent on this repository, so nothing downstream runs.', github.actor) }}"
+
+  # Every job here is a framework job and takes `runners.slim`, like every other
+  # deterministic step in the payload. They hard-coded `ubuntu-latest` until 21/09/2026,
+  # which sent them to GitHub-hosted runners whatever the profile said -- including for the
+  # organisation whose three runner tiers are all its own fleet (FR-070).
+  classify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      route: ${{ steps.route.outputs.route }}
+      issue-number: ${{ steps.route.outputs.issue-number }}
+      pr-number: ${{ steps.route.outputs.pr-number }}
+      linked-issue: ${{ steps.route.outputs.linked-issue }}
+      ci-conclusion: ${{ steps.route.outputs.ci-conclusion }}
+      ci-run-id: ${{ steps.route.outputs.ci-run-id }}
+      merge-gate-attempts: ${{ steps.route.outputs.merge-gate-attempts }}
+      implement-attempts: ${{ steps.route.outputs.implement-attempts }}
+      refine-mode: ${{ steps.route.outputs.refine-mode }}
+      triage-mode: ${{ steps.route.outputs.triage-mode }}
+      trigger-kind: ${{ steps.route.outputs.trigger-kind }}
+      pr-merged: ${{ steps.route.outputs.pr-merged }}
+      pr-base: ${{ steps.route.outputs.pr-base }}
+      closes-issue: ${{ steps.route.outputs.closes-issue }}
+    steps:
+      - name: Checkout workflow actions
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Classify event into a single route
+        id: route
+        uses: ./.github/actions/classify-route
+        with:
+          token: ${{ github.token }}
+      # The route is annotated on every run, including the many that choose none: an event
+      # that went nowhere and an event nothing was listening for look identical otherwise.
+      - name: Record the outcome
+        if: always()
+        uses: ./.github/actions/record-outcome
+        with:
+          outcome: ${{ steps.route.outputs.route == 'none' && 'no-action' || 'acted' }}
+          reason: ${{ steps.route.outputs.route == 'none' && 'no-route' || 'dispatched' }}
+          route: ${{ steps.route.outputs.route }}
+          subject: ${{ steps.route.outputs.issue-number && format('#{0}', steps.route.outputs.issue-number) || steps.route.outputs.pr-number && format('#{0}', steps.route.outputs.pr-number) || '-' }}
+          detail: "${{ steps.route.outputs.route == 'none' && format('No route for this {0} event.', github.event_name) || format('Routed this {0} event to {1}.', github.event_name, steps.route.outputs.route) }}"
+
+  call-refine:
+    needs: [classify, authorize]
+    if: needs.classify.outputs.route == 'refine' && needs.authorize.outputs.trusted == 'true'
+    uses: ./.github/workflows/agent-refine.lock.yml
+    concurrency:
+      group: refine-${{ needs.classify.outputs.issue-number }}
+      cancel-in-progress: false
+    # write-all, not a narrower map: every worker's agent job declares `permissions: read-all`,
+    # which requests read on every scope. A caller granting less cannot satisfy it, and GitHub
+    # rejects the call with a startup failure before any job is created. The real boundary is the
+    # worker's own read-all plus safe-outputs, not this grant.
+    permissions: write-all
+    with:
+      issue-number: ${{ needs.classify.outputs.issue-number }}
+      mode: ${{ needs.classify.outputs.refine-mode }}
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      BOT_APP_ID: ${{ secrets.BOT_APP_ID }}
+      BOT_PRIVATE_KEY: ${{ secrets.BOT_PRIVATE_KEY }}
+
+  # Checks whether an open bot PR already exists for the issue. If it does, implement is
+  # skipped — the merge-gate will handle fixing the existing PR. This prevents duplicate
+  # PRs when retries are triggered after a merge-gate failure.
+  check-implement-pr:
+    needs: [classify, authorize]
+    if: needs.classify.outputs.route == 'implement' && needs.authorize.outputs.trusted == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      has-open-pr: ${{ steps.check.outputs.has-open-pr }}
+    steps:
+      - name: Checkout workflow actions
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Read the linkage the App recorded
+        id: linkage
+        uses: ./.github/actions/resolve-change-linkage
+        with:
+          token: ${{ github.token }}
+          issue-number: ${{ needs.classify.outputs.issue-number }}
+      - name: Check for existing open bot PR
+        id: check
+        env:
+          MARKER_PR: ${{ steps.linkage.outputs.pr }}
+          MARKER_SOURCE: ${{ steps.linkage.outputs.source }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ needs.classify.outputs.issue-number }}
+        run: |
+          set -euo pipefail
+          # A refine-to-implement transition emits two label events (the implement label,
+          # then the worker re-adding bot-working) and each one classifies to implement.
+          # The older router run wins: a younger run that finds an older live implement
+          # route for the same issue skips instead of queueing a duplicate worker. Only
+          # bot-actor titles are counted, so a human's "waiting for bot-working" run can
+          # never block the real one.
+          #
+          # This is a pre-filter, not the guarantee. It reads run titles, which are
+          # presentation: they carry the issue's own text, they change when somebody edits
+          # `run-name`, and listing runs is eventually consistent, so two runs starting in the
+          # same second can both see nothing. What it buys is a skip before a runner starts,
+          # which nothing inside the worker can do.
+          #
+          # The guarantee is in the worker. `eligibility` runs while the concurrency group is
+          # held and asks the App's own record whether this issue already has an open pull
+          # request; a group permits one running job at a time, so by then the answer is true
+          # if it is going to be. That is GitHub's own advice -- a concurrency group for the
+          # exclusion, an idempotent check for the rest -- and it is why no custom lock is
+          # needed here.
+          #
+          # Both run-name shapes, because there are two: an issue event renders
+          # `Working (Implement): <title> (#8)` and a dispatch renders
+          # `Working (Implement): #8`. Matching only the first made a dispatched implement
+          # invisible to this filter, and to itself, which produced two agent runs and two
+          # pull requests for issue #5 on 17/09/2026 (#6 and #7).
+          #
+          # Anchored to the end of the title rather than found anywhere in it: a title
+          # carries the issue's own text, so an issue named "Fix #80 handling" would read
+          # as a duplicate of #80 to every other run.
+          for st in in_progress queued; do
+            dupes=$(gh api "repos/$REPO/actions/workflows/work-router.yml/runs?status=$st&per_page=100"               --jq "[.workflow_runs[]
+                | select(.id < $GITHUB_RUN_ID)
+                | select(
+                    ((.display_title | startswith(\"Working (Implement)\")) and ((.display_title | endswith(\"(#${ISSUE_NUMBER})\")) or (.display_title | endswith(\": #${ISSUE_NUMBER}\"))))
+                    or
+                    ((.display_title | contains(\"implement label on #${ISSUE_NUMBER} by\")) and (.display_title | endswith(\"[bot]\")))
+                  )
+              ] | length" 2>/dev/null || echo 0)
+            if [ "${dupes:-0}" -gt 0 ]; then
+              echo "has-open-pr=true" >> "$GITHUB_OUTPUT"
+              echo "::notice::An older router run is already implementing #$ISSUE_NUMBER; skipping the duplicate."
+              exit 0
+            fi
+          done
+
+          # Linkage first: the App records the pull request it opened, so the duplicate
+          # check is an exact lookup rather than a text search (FR-064). Only an OPEN pull
+          # request blocks; a merged or closed one means a re-implement is legitimate. A
+          # body-sourced answer is honoured here and said out loud: the cost of believing a
+          # marker somebody typed is one skipped implement on their own issue, and the cost
+          # of ignoring an uncorroborated one is a duplicate pull request.
+          if [ -n "$MARKER_PR" ]; then
+            state=$(gh pr view "$MARKER_PR" --repo "$REPO" --json state --jq '.state' 2>/dev/null || echo GONE)
+            if [ "$state" = "OPEN" ]; then
+              echo "has-open-pr=true" >> "$GITHUB_OUTPUT"
+              echo "::notice::Issue #$ISSUE_NUMBER is linked (source: $MARKER_SOURCE) to open PR #$MARKER_PR. Skipping duplicate implement."
+              exit 0
+            fi
+            echo "Linked PR #$MARKER_PR is $state; a fresh implement is allowed."
+          fi
+
+          existing=$(gh pr list --repo "$REPO" --state open --json number,author,body \
+            --jq "[.[]
+              | select(.author.login | startswith(\"app/\") or endswith(\"[bot]\"))
+              | (.body | ascii_downcase) as \$body
+              | select(\$body | contains(\"close #${ISSUE_NUMBER}\") or contains(\"closes #${ISSUE_NUMBER}\") or contains(\"closed #${ISSUE_NUMBER}\") or contains(\"fix #${ISSUE_NUMBER}\") or contains(\"fixes #${ISSUE_NUMBER}\") or contains(\"fixed #${ISSUE_NUMBER}\") or contains(\"resolve #${ISSUE_NUMBER}\") or contains(\"resolves #${ISSUE_NUMBER}\") or contains(\"resolved #${ISSUE_NUMBER}\"))
+            ] | length")
+          if [ "$existing" -gt 0 ]; then
+            echo "has-open-pr=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Issue #$ISSUE_NUMBER already has an open bot PR. Skipping implement to prevent duplicates."
+          else
+            echo "has-open-pr=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Record the outcome
+        if: always()
+        uses: ./.github/actions/record-outcome
+        with:
+          outcome: ${{ steps.check.outputs.has-open-pr == 'true' && 'no-action' || 'acted' }}
+          reason: ${{ steps.check.outputs.has-open-pr == 'true' && 'duplicate-in-flight' || 'clear-to-proceed' }}
+          route: implement
+          subject: ${{ format('#{0}', needs.classify.outputs.issue-number) }}
+          detail: "${{ steps.check.outputs.has-open-pr == 'true' && 'An implement run or an open pull request already exists for this issue.' || 'No implement run and no open pull request for this issue, so implement may start.' }}"
+
+  call-implement:
+    needs: [classify, authorize, check-implement-pr]
+    if: needs.classify.outputs.route == 'implement' && needs.authorize.outputs.trusted == 'true' && needs.check-implement-pr.outputs.has-open-pr != 'true'
+    uses: ./.github/workflows/agent-implement.lock.yml
+    concurrency:
+      # One group for the repository when `branching.concurrentImplements` is 1, which is the
+      # default and the inherited behaviour; one group per issue above that. There is no way to
+      # say "at most N" in a concurrency group, so the number selects the shape and the runner
+      # fleet is the real ceiling.
+      #
+      # The queue line travels with the global shape and appears only there. A group keeps one
+      # running and one pending run and a newer pending run replaces the older, so a single
+      # global group would implement one of six labelled issues and drop five -- hence the
+      # queue. Keyed per issue that default is exactly right: two events for one issue collapse
+      # into one pending run instead of producing two agents and two pull requests.
+      group: implement-${{ needs.classify.outputs.issue-number }}
+      cancel-in-progress: false
+    permissions: write-all
+    with:
+      issue-number: ${{ needs.classify.outputs.issue-number }}
+      attempts_so_far: ${{ needs.classify.outputs.implement-attempts }}
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      BOT_APP_ID: ${{ secrets.BOT_APP_ID }}
+      BOT_PRIVATE_KEY: ${{ secrets.BOT_PRIVATE_KEY }}
+
+  dispatch-triage:
+    needs: [classify, authorize]
+    if: needs.classify.outputs.route == 'triage' && needs.authorize.outputs.is_outside_collaborator == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Create bot token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ secrets.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_PRIVATE_KEY }}
+      - name: Dispatch trusted triage run
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REPO: ${{ github.repository }}
+          # The repository default branch, deliberately, and not the profile's branch point: a
+          # dispatch runs the workflow file at the ref it names, and every event-triggered run
+          # executes the default-branch copy, so a dispatch at `cutFrom` would run whatever
+          # router that branch happens to hold. Under a chain that is a stale one (FR-025).
+          REF: ${{ github.event.repository.default_branch }}
+          ISSUE_NUMBER: ${{ needs.classify.outputs.issue-number }}
+          MODE: ${{ needs.classify.outputs.triage-mode }}
+        run: |
+          set -euo pipefail
+          gh workflow run work-router.yml --repo "$REPO" --ref "$REF" \
+            -f operation=triage \
+            -f issue-number="$ISSUE_NUMBER" \
+            -f mode="$MODE"
+      - name: Check out the outcome action
+        if: always()
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/actions/record-outcome
+      - name: Record the outcome
+        if: always()
+        uses: ./.github/actions/record-outcome
+        with:
+          outcome: acted
+          reason: dispatched
+          route: triage
+          subject: ${{ format('#{0}', needs.classify.outputs.issue-number) }}
+          detail: "Dispatched a trusted triage run for an outside collaborator's issue."
+
+  call-triage:
+    needs: [classify, authorize]
+    # Triage on issue open is for outside collaborators only (handled by dispatch-triage).
+    # A trusted actor who opens an issue should not start triage — they can add refine/implement/direct
+    # labels or manually dispatch triage. All other triage routes (labeled, comment, dispatch) are trusted.
+    if: needs.classify.outputs.route == 'triage' && needs.authorize.outputs.trusted == 'true' && !(github.event_name == 'issues' && github.event.action == 'opened')
+    uses: ./.github/workflows/agent-triage.lock.yml
+    concurrency:
+      group: triage-${{ needs.classify.outputs.issue-number }}
+      cancel-in-progress: false
+    permissions: write-all
+    with:
+      issue-number: ${{ needs.classify.outputs.issue-number }}
+      mode: ${{ needs.classify.outputs.triage-mode }}
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      BOT_APP_ID: ${{ secrets.BOT_APP_ID }}
+      BOT_PRIVATE_KEY: ${{ secrets.BOT_PRIVATE_KEY }}
+
+  call-apply-review:
+    needs: [classify, authorize]
+    if: needs.classify.outputs.route == 'apply-review' && needs.authorize.outputs.trusted == 'true'
+    uses: ./.github/workflows/agent-apply-review.lock.yml
+    concurrency:
+      group: pr-feedback-${{ needs.classify.outputs.pr-number }}
+      cancel-in-progress: false
+    permissions: write-all
+    with:
+      pr-number: ${{ needs.classify.outputs.pr-number }}
+      linked-issue: ${{ needs.classify.outputs.linked-issue }}
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      BOT_APP_ID: ${{ secrets.BOT_APP_ID }}
+      BOT_PRIVATE_KEY: ${{ secrets.BOT_PRIVATE_KEY }}
+
+  # Which branch is this gate's pull request aimed at? (FR-033)
+  #
+  # The classifier is pure: it is given an event and answers a route, and it is never given
+  # the forge. So the base cannot come from there, and it cannot come from a step inside the
+  # gate either -- a concurrency key is evaluated when the job starts, so a key that depends
+  # on the job's own steps is a key that cannot exist. It is resolved here, in a job of its
+  # own, before the caller that needs it.
+  resolve-merge-base:
+    needs: classify
+    if: needs.classify.outputs.route == 'merge-gate'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      base: ${{ steps.resolve.outputs.base }}
+    steps:
+      - name: Checkout workflow actions
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Resolve the pull request's base branch
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ needs.classify.outputs.pr-number }}
+          DISPATCH_BASE: ${{ inputs.base-branch }}
+          KNOWN_BRANCHES: "dev,test,main"
+          FALLBACK_BASE: "dev"
+        run: |
+          set -euo pipefail
+          base=""
+
+          # The forge first. It is the only authority on what a pull request targets, and a
+          # branch name typed into a dispatch box is a guess about it.
+          if [ -n "${PR_NUMBER:-}" ]; then
+            base="$(gh pr view "$PR_NUMBER" --repo "$REPO" --json baseRefName --jq '.baseRefName' 2>/dev/null || true)"
+          fi
+
+          # Then the dispatch input, for a gate dispatched without a pull request the forge
+          # will answer for. Checked against the branches this repository actually lands work
+          # on: an unknown value would get a lock all to itself, which is the same as no lock,
+          # and the belt exists precisely so that cannot happen.
+          if [ -z "$base" ] && [ -n "${DISPATCH_BASE:-}" ]; then
+            while IFS= read -r known; do
+              [ "$known" = "$DISPATCH_BASE" ] || continue
+              base="$DISPATCH_BASE"
+              break
+            done < <(printf '%s\n' "$KNOWN_BRANCHES" | tr ',' '\n')
+            [ -n "$base" ] ||
+              echo "::warning::Ignoring base-branch '${DISPATCH_BASE}': it is not one of ${KNOWN_BRANCHES}."
+          fi
+
+          # Then the profile's own base, so the key is never empty. An empty key does not
+          # fail: it puts every gate back into one queue, quietly, which is the behaviour
+          # this task exists to end.
+          base="${base:-$FALLBACK_BASE}"
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+          echo "The merge belt for this run is keyed on '${base}'."
+      - name: Record the outcome
+        if: always()
+        uses: ./.github/actions/record-outcome
+        with:
+          outcome: acted
+          reason: clear-to-proceed
+          route: merge-gate
+          subject: ${{ format('#{0}', needs.classify.outputs.pr-number) }}
+          detail: "The merge belt for this run is keyed on ${{ steps.resolve.outputs.base }}."
+
+  # The merge belt is one lock per branch work lands on, not one group per pull request.
+  # A batch of six overnight pull requests into one branch means every merge moves that
+  # branch under the other five; gates running at once would each rebase onto a base another
+  # gate is about to invalidate. Serialising the belt means each gate sees a base that only
+  # changes between gates, every merge re-arms the siblings through detect-pr-conflicts's
+  # rescan, and the queue drains one pull request at a time.
+  #
+  # Per branch rather than per repository, because a promotion into a later stage has no
+  # reason to wait for feature work into an earlier one: they move different branches, and
+  # neither invalidates the other's base (FR-033). Under trunk there is one such branch, so
+  # this is the repository-wide belt it has always been.
+  call-merge-gate:
+    needs: [classify, resolve-merge-base]
+    if: needs.classify.outputs.route == 'merge-gate'
+    uses: ./.github/workflows/agent-merge-gate.lock.yml
+    concurrency:
+      group: merge-belt-${{ needs.resolve-merge-base.outputs.base }}
+      cancel-in-progress: false
+    permissions: write-all
+    with:
+      pr-number: ${{ needs.classify.outputs.pr-number }}
+      linked-issue: ${{ needs.classify.outputs.linked-issue }}
+      ci-conclusion: ${{ needs.classify.outputs.ci-conclusion }}
+      ci-run-id: ${{ needs.classify.outputs.ci-run-id }}
+      attempts_so_far: ${{ needs.classify.outputs.merge-gate-attempts }}
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      BOT_APP_ID: ${{ secrets.BOT_APP_ID }}
+      BOT_PRIVATE_KEY: ${{ secrets.BOT_PRIVATE_KEY }}
+
+  call-audit:
+    needs: classify
+    if: needs.classify.outputs.route == 'audit'
+    uses: ./.github/workflows/agent-audit.lock.yml
+    concurrency:
+      group: audit
+      cancel-in-progress: false
+    permissions: write-all
+    with:
+      trigger-kind: ${{ needs.classify.outputs.trigger-kind }}
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      BOT_APP_ID: ${{ secrets.BOT_APP_ID }}
+      BOT_PRIVATE_KEY: ${{ secrets.BOT_PRIVATE_KEY }}
+
+  call-release:
+    needs: [classify, authorize]
+    if: needs.classify.outputs.route == 'release' && needs.authorize.outputs.trusted == 'true'
+    uses: ./.github/workflows/agent-release.lock.yml
+    permissions: write-all
+    with:
+      version-bump: ${{ github.event.inputs.version-bump || 'auto' }}
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+  bot-approve:
+    needs: classify
+    if: >
+      needs.classify.outputs.route == 'bot-approve' &&
+        (github.actor == 'app/github-actions' || github.actor == 'personalcorpacc-agentic-loop[bot]')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      # `contents: read` because this job checks out. A `permissions:` block is
+      # exhaustive -- every scope it does not name is `none` -- and on a public
+      # repository checkout still succeeds without it, because a public repository is
+      # readable without a token at all. On a private one the same job fails with
+      # `repository not found`, which reads as a missing repository rather than a
+      # missing scope. The canary is public and never showed it (22/09/2026).
+      contents: read
+      actions: write
+    steps:
+      - name: Approve pending workflow runs
+        id: approve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ github.head_ref }}
+        run: |
+          set -euo pipefail
+
+          mapfile -t run_ids < <(
+            gh api "repos/$REPO/actions/runs?status=action_required&branch=$BRANCH" \
+              --jq '.workflow_runs[].id'
+          )
+
+          echo "approved=${#run_ids[@]}" >> "$GITHUB_OUTPUT"
+
+          if [ "${#run_ids[@]}" -eq 0 ]; then
+            echo "No runs awaiting approval on branch $BRANCH"
+            exit 0
+          fi
+
+          for run_id in "${run_ids[@]}"; do
+            echo "Approving run $run_id"
+            gh api "repos/$REPO/actions/runs/$run_id/approve" --method POST
+          done
+      - name: Check out the outcome action
+        if: always()
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/actions/record-outcome
+      - name: Record the outcome
+        if: always()
+        uses: ./.github/actions/record-outcome
+        with:
+          outcome: ${{ steps.approve.outputs.approved == '0' && 'no-action' || 'acted' }}
+          reason: ${{ steps.approve.outputs.approved == '0' && 'nothing-to-sweep' || 'dispatched' }}
+          route: bot-approve
+          subject: ${{ github.head_ref || '-' }}
+          detail: "${{ steps.approve.outputs.approved == '0' && 'No runs were waiting for approval on this branch.' || format('Approved {0} run(s) waiting on this branch.', steps.approve.outputs.approved) }}"
+
+  # Conflict watcher for bot pull requests. Merge-conflict state is only available from the
+  # mergeability API, which the pure classifier cannot read, so this is an event-gated
+  # deterministic dispatcher rather than a classify route (it runs alongside bot-approve on
+  # the same pull_request_target event). It NEVER checks out or runs pull request code — it
+  # reads mergeability through the API and dispatches the Merge Gate — so it is safe on
+  # pull_request_target. Two entry points:
+  #   opened / reopened / synchronize → check the pull request that changed. Gated to this
+  #     repository's own branches so a fork PR never starts this App-token job.
+  #   closed & merged                 → the target branch moved, so re-check every open bot
+  #     pull request that may have just become conflicted (the "main changed after another PR
+  #     merged" case). A merge into the default branch is an inherently trusted internal event.
+  # It dispatches only for bot-authored, open, non-draft pull requests whose head is this
+  # repository AND whose CI has already concluded (dispatching while CI is still pending would
+  # make the gate read a 'pending' verdict and prematurely ask for human review; that PR is
+  # covered by the CI-completion route instead). The gate's subject job re-validates ownership
+  # before any agent runs.
+  # Every post-merge transition, in one place, for a merge by anybody. The gate used to do
+  # this for the merges it made, which left a human's merge doing nothing at all: the labels
+  # stayed, the issue stayed open, and the board said work was in flight that had landed
+  # days ago. This route sees the close, whoever made it (FR-051).
+  #
+  # The plain workflow token on purpose: label writes and an issue close are events nobody
+  # downstream needs to react to, and a label written by the App re-enters the router. The
+  # matrix asserts that the re-entry classifies to no route.
+  stage-merge:
+    needs: classify
+    if: needs.classify.outputs.route == 'stage-merge'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      # `contents: read` because this job checks out. A `permissions:` block is
+      # exhaustive -- every scope it does not name is `none` -- and on a public
+      # repository checkout still succeeds without it, because a public repository is
+      # readable without a token at all. On a private one the same job fails with
+      # `repository not found`, which reads as a missing repository rather than a
+      # missing scope. The canary is public and never showed it (22/09/2026).
+      contents: read
+      issues: write
+      pull-requests: write
+    env:
+      IMPLEMENT_LABEL: "implement"
+      WORKING_LABEL: "bot-working"
+      REVIEW_LABEL: "review"
+      PR_PENDING_LABEL: "pr-pending"
+      HOLD_LABEL: "hold"
+      MERGED_STAGE_LABEL: "merged-{stage}"
+    steps:
+      - name: Checkout workflow actions
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # A dispatch raised with GITHUB_TOKEN starts no run, which is the framework's own
+      # recursion guard, so the carry-down below needs the App's token like every other
+      # dispatch this router makes.
+      - name: Generate App token for the carry-down
+        id: carry-token
+        uses: actions/create-github-app-token@df432ceedc7162793a195dd1713ff69aefc7379e # v2.0.6
+        with:
+          app-id: ${{ secrets.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_PRIVATE_KEY }}
+      - name: Find the change this pull request carries
+        id: change
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ needs.classify.outputs.pr-number }}
+          LINKED: ${{ needs.classify.outputs.linked-issue }}
+          BASE_REF: ${{ needs.classify.outputs.pr-base }}
+          MERGED_STAGE_LABEL: ${{ env.MERGED_STAGE_LABEL }}
+        run: |
+          set -euo pipefail
+          # The classifier resolved this already for the routes that need it; this is the
+          # same rule when it did not (FR-030).
+          # shellcheck source=../actions/resolve-pr-issue/resolve-pr-issue.sh
+          . "$GITHUB_WORKSPACE/.github/actions/resolve-pr-issue/resolve-pr-issue.sh"
+
+          # Every issue this pull request carries, not just the first. Under `env-promotion`
+          # the head is a snapshot of the stage below, so one promotion carries whatever
+          # merged there since the last one and every one of those issues reached this stage
+          # when it merged. Labelling only the first would leave the rest sitting on a stage
+          # they had left, and would never close them (FR-031, FR-051).
+          #
+          # Every other strategy carries exactly one, so `issues` is that one and the scalar
+          # `issue` below is the same value: the readers that want a single number -- the
+          # outcome line, the comment text -- keep reading one.
+          issues="$(pr_issues "$PR")"
+          [ -n "$issues" ] || issues="$LINKED"
+          {
+            echo "issues<<EOF_ISSUES"
+            printf '%s\n' "$issues"
+            echo "EOF_ISSUES"
+          } >> "$GITHUB_OUTPUT"
+
+          issue="$LINKED"
+          [ -n "$issue" ] || issue="$(printf '%s' "$issues" | head -n1)"
+          echo "issue=${issue}" >> "$GITHUB_OUTPUT"
+          echo "issue_count=$(printf '%s\n' "$issues" | grep -c '[0-9]' || true)" >> "$GITHUB_OUTPUT"
+
+          # A promotion pull request carries the stage it was promoting into, which is what
+          # tells an unmerged close apart: a promotion that was rejected is a hold on the
+          # change, and a first-stage pull request that was closed is just a release.
+          promotion="$(gh pr view "$PR" --repo "$REPO" --json body --jq '.body // ""' |
+            grep -oE '<!-- promotion-pr: [^:]+: [0-9]+ -->' | head -n1 || true)"
+          echo "promotion=${promotion:+true}" >> "$GITHUB_OUTPUT"
+
+          # `merged-{stage}` with the stage filled in. Built here because the expression
+          # language has no substitution: format() positions arguments, it does not replace
+          # a token inside a string.
+          echo "stage_label=${MERGED_STAGE_LABEL/'{stage}'/$BASE_REF}" >> "$GITHUB_OUTPUT"
+
+          if [ -z "$issue" ]; then
+            echo "::notice::PR #${PR} closed on a stage but belongs to no issue this loop knows; nothing to move."
+          fi
+      # A merge moves the change on: the stage it reached is recorded, and every label that
+      # described it being in flight comes off. The label actions tolerate a label that is
+      # not there, which `gh issue edit --add-label` does not.
+      - name: Record the stage this change reached
+        if: steps.change.outputs.issue != '' && needs.classify.outputs.pr-merged == 'true'
+        uses: ./.github/actions/add-issue-labels
+        with:
+          token: ${{ github.token }}
+          issue-number: ${{ steps.change.outputs.issues }}
+          labels: ${{ steps.change.outputs.stage_label }}
+      - name: Clear the in-flight labels
+        if: steps.change.outputs.issue != '' && needs.classify.outputs.pr-merged == 'true'
+        uses: ./.github/actions/remove-issue-labels
+        with:
+          token: ${{ github.token }}
+          issue-number: ${{ steps.change.outputs.issues }}
+          labels: |
+            ${{ env.IMPLEMENT_LABEL }}
+            ${{ env.WORKING_LABEL }}
+            ${{ env.REVIEW_LABEL }}
+            ${{ env.PR_PENDING_LABEL }}
+      # The only place pr-pending comes off, because the only thing that retires it is the
+      # pull request ceasing to be open -- which is this event, whoever caused it.
+      - name: Release a pull request that closed without merging
+        if: steps.change.outputs.issue != '' && needs.classify.outputs.pr-merged != 'true'
+        uses: ./.github/actions/remove-issue-labels
+        with:
+          token: ${{ github.token }}
+          issue-number: ${{ steps.change.outputs.issues }}
+          labels: |
+            ${{ env.PR_PENDING_LABEL }}
+            ${{ env.WORKING_LABEL }}
+      # A closed promotion is a decision about the change, not about the pull request: it
+      # stays held until somebody says otherwise, or the next promotion cycle re-opens the
+      # same rejected change tomorrow.
+      - name: Hold a change whose promotion was refused
+        if: steps.change.outputs.issue != '' && needs.classify.outputs.pr-merged != 'true' && steps.change.outputs.promotion == 'true'
+        uses: ./.github/actions/add-issue-labels
+        with:
+          token: ${{ github.token }}
+          issue-number: ${{ steps.change.outputs.issues }}
+          labels: ${{ env.HOLD_LABEL }}
+      # The merge that just happened is the thing that breaks ancestry: promotion replays a
+      # change onto the stage above, so the moment it lands there, that stage holds commits
+      # the stage below does not, and a branch cut from it can no longer be rebase-merged
+      # downwards -- the forge refuses with "This branch can't be rebased" and names nothing.
+      # Carried down here, in the run that caused it, rather than left to the six-hourly
+      # clock: waiting on a cron for a state the loop itself just broke is not a mechanism,
+      # it is a belt. The clock stays for drift the loop did not cause, which is a person
+      # pushing to a later stage -- the case FR-079 was written for (FR-086).
+      #
+      # Nothing is carried down from the first stage: it has nothing below it.
+      - name: Carry the stage that moved back down the chain
+        # Only a merge moves a stage: a pull request closed unmerged changed nothing.
+        if: needs.classify.outputs.pr-merged == 'true' && needs.classify.outputs.pr-base != ''
+        env:
+          GH_TOKEN: ${{ steps.carry-token.outputs.token }}
+          REPO: ${{ github.repository }}
+          MOVED: ${{ needs.classify.outputs.pr-base }}
+          STAGES: "dev,test,main"
+          # A dispatch runs the workflow file at the ref it names, and every event-triggered
+          # run executes the default-branch copy, so this names the same one (FR-025).
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          case ",${STAGES}," in
+            *",${MOVED},"*) ;;
+            *)
+              echo "::notice::${MOVED} is not one of this repository's stages (${STAGES}); nothing to carry down."
+              exit 0
+              ;;
+          esac
+
+          # The first stage has nothing below it, and under trunk there is only one branch,
+          # so both answer here rather than dispatching a route that would find nothing.
+          first="${STAGES%%,*}"
+          if [ "$MOVED" = "$first" ]; then
+            echo "${MOVED} is the first stage, so no stage is below it; nothing to carry down."
+            exit 0
+          fi
+          echo "${MOVED} moved, so the stages below it may no longer descend from it; carrying down."
+          gh api "repos/$REPO/actions/workflows/work-router.yml/dispatches" \
+            --method POST \
+            -f ref="$DEFAULT_BRANCH" \
+            -f "inputs[operation]=sync-stages"
+      - name: Say why the change is held
+        if: steps.change.outputs.issue != '' && needs.classify.outputs.pr-merged != 'true' && steps.change.outputs.promotion == 'true'
+        uses: ./.github/actions/create-issue-comment
+        with:
+          token: ${{ github.token }}
+          issue-number: ${{ steps.change.outputs.issues }}
+          body: |
+            The promotion pull request #${{ needs.classify.outputs.pr-number }} into
+            `${{ needs.classify.outputs.pr-base }}` was closed without merging, so this change
+            carries `${{ env.HOLD_LABEL }}` and the promotion route will leave it alone until the
+            label is removed.
+      - name: Close the issue where the profile says a change ends
+        if: steps.change.outputs.issue != '' && needs.classify.outputs.closes-issue == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          ISSUES: ${{ steps.change.outputs.issues }}
+        run: |
+          set -euo pipefail
+          # Every carried issue, because under `env-promotion` the merge that reaches the
+          # closing stage reaches it for all of them at once. One `gh` call each, and a close
+          # that fails does not take the rest with it: the issues are independent and a
+          # half-closed set with an error is better than a set nobody closed.
+          while IFS= read -r issue; do
+            [ -n "$issue" ] || continue
+            if gh issue close "$issue" --repo "$REPO" --reason completed; then
+              echo "Issue #${issue} closed: its change reached the stage this repository ends on."
+            else
+              echo "::warning::Issue #${issue} reached the closing stage but could not be closed."
+            fi
+          done <<< "$ISSUES"
+      - name: Record the outcome
+        if: always()
+        uses: ./.github/actions/record-outcome
+        with:
+          outcome: ${{ steps.change.outputs.issue == '' && 'no-action' || 'acted' }}
+          reason: ${{ steps.change.outputs.issue == '' && 'no-linked-issue' || needs.classify.outputs.pr-merged == 'true' && 'merged' || steps.change.outputs.promotion == 'true' && 'hold' || 'labelled' }}
+          route: stage-merge
+          subject: ${{ format('#{0}', needs.classify.outputs.pr-number) }}
+          # The count is in the line because a promotion under env-promotion carries several
+          # issues and an outcome naming one of them reads as though the others were missed.
+          detail: "${{ steps.change.outputs.issue == '' && 'The pull request closed on a stage but belongs to no issue this loop knows.' || needs.classify.outputs.pr-merged == 'true' && format('Issue #{0} reached {1} ({2} issue(s) carried).', steps.change.outputs.issue, needs.classify.outputs.pr-base, steps.change.outputs.issue_count) || format('Pull request closed without merging; issue #{0} released.', steps.change.outputs.issue) }}"
+
+  # A hotfix goes to the release branch first, because that is what is in production, and
+  # then back to the trunk -- in that order, or the next release cuts a branch without it and
+  # the fix is lost at the next cut. Nobody remembers to do this by hand at the moment they
+  # are shipping a hotfix, which is why it is the route's job (FR-055).
+  #
+  # Its own job with the App token: a pull request opened with the plain workflow token
+  # starts no checks, and a cherry-pick-back that arrives with no CI is a change nobody
+  # assessed landing on the trunk. stage-merge keeps the plain token for its label work,
+  # which is what its own event grants and all it needs.
+  hotfix-back:
+    needs: classify
+    if: needs.classify.outputs.route == 'stage-merge' && needs.classify.outputs.pr-merged == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: read
+    env:
+      HOTFIX_LABEL: "hotfix"
+      TRUNK: "dev"
+    steps:
+      # Unconditional, and first. The decide step below sources `resolve-pr-issue.sh` out of
+      # the workspace, so the workspace has to exist before it runs -- this checkout used to
+      # sit after it, conditioned on the decision it had not made yet, and the job failed on
+      # every merge into a release branch with "No such file or directory". The route matrix
+      # greps the router's text and cannot see step order; only a run shows it.
+      - name: Checkout workflow actions
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Decide whether this merge is a hotfix on a release branch
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BASE_REF: ${{ needs.classify.outputs.pr-base }}
+          PR: ${{ needs.classify.outputs.pr-number }}
+          LINKED: ${{ needs.classify.outputs.linked-issue }}
+        run: |
+          set -euo pipefail
+          echo "carry=false" >> "$GITHUB_OUTPUT"
+
+          # A repository that cuts no release branches has no pattern at all: the optional
+          # token takes its own line with it, so this is read defensively.
+          if [ -z "${RELEASE_PATTERN:-}" ]; then
+            echo "This repository cuts no release branches; nothing to carry back."
+            exit 0
+          fi
+          if ! printf '%s' "$BASE_REF" | grep -qE "${RELEASE_PATTERN}"; then
+            echo "${BASE_REF} is not a release branch; the trunk is where this change already is."
+            exit 0
+          fi
+
+          # shellcheck source=../actions/resolve-pr-issue/resolve-pr-issue.sh
+          . "$GITHUB_WORKSPACE/.github/actions/resolve-pr-issue/resolve-pr-issue.sh"
+          issue="$LINKED"
+          [ -n "$issue" ] || issue="$(pr_issue "$PR")"
+          if [ -z "$issue" ]; then
+            echo "::notice::PR #${PR} merged into ${BASE_REF} but belongs to no issue this loop knows; nothing to carry back."
+            exit 0
+          fi
+
+          # Without the label this is ordinary work on a release branch, and FR-055 says the
+          # route only records which branch it reached -- which stage-merge has already done.
+          if ! gh issue view "$issue" --repo "$REPO" --json labels --jq '[.labels[].name]' |
+            jq -e --arg name "$HOTFIX_LABEL" 'index($name)' >/dev/null 2>&1; then
+            echo "Issue #${issue} does not carry ${HOTFIX_LABEL}; ${BASE_REF} is where this change belongs."
+            exit 0
+          fi
+
+          {
+            echo "carry=true"
+            echo "issue=${issue}"
+          } >> "$GITHUB_OUTPUT"
+          echo "Issue #${issue} is a hotfix on ${BASE_REF}; carrying it back to ${TRUNK}."
+      - name: Generate App token for the carry-back
+        if: steps.decide.outputs.carry == 'true'
+        id: app-token
+        uses: actions/create-github-app-token@df432ceedc7162793a195dd1713ff69aefc7379e # v2.0.6
+        with:
+          app-id: ${{ secrets.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_PRIVATE_KEY }}
+      - name: Check out the history the cherry-pick needs
+        if: steps.decide.outputs.carry == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+      - name: Open the carry-back pull request
+        if: steps.decide.outputs.carry == 'true'
+        id: carry
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ needs.classify.outputs.pr-number }}
+          BASE_REF: ${{ needs.classify.outputs.pr-base }}
+          ISSUE: ${{ steps.decide.outputs.issue }}
+          GIT_IDENTITY: "personalcorpacc-agentic-loop[bot]"
+          TITLE_PREFIX: "[bot] "
+        run: |
+          set -euo pipefail
+          git config user.name "$GIT_IDENTITY"
+          git config user.email "${GIT_IDENTITY}@users.noreply.github.com"
+
+          merged="$(gh api "repos/$REPO/pulls/$PR" --jq '.merge_commit_sha // empty')"
+          [ -n "$merged" ] || { echo "::warning::PR #${PR} reports no merge commit; nothing to carry back."; exit 0; }
+          # Fetched before it is named: a checkout brings down what the run needs and nothing
+          # else, and handing an unfetched sha to git exits 128.
+          git fetch --no-tags --quiet origin "$merged" "$TRUNK" || true
+
+          if git merge-base --is-ancestor "$merged" "origin/${TRUNK}" 2>/dev/null; then
+            echo "${TRUNK} already has ${merged:0:8}; nothing to carry back."
+            exit 0
+          fi
+
+          branch="hotfix-back/${ISSUE}-${GITHUB_RUN_ID}"
+          git switch --detach "origin/${TRUNK}"
+          git switch -c "$branch"
+          if ! git cherry-pick -m 1 "$merged" >/dev/null 2>&1 && ! git cherry-pick "$merged" >/dev/null 2>&1; then
+            files="$(git diff --name-only --diff-filter=U 2>/dev/null | head -n 20 | tr '\n' ' ')"
+            git cherry-pick --abort >/dev/null 2>&1 || true
+            echo "::warning::The hotfix on ${BASE_REF} does not apply cleanly onto ${TRUNK} (${files:-files not recorded}); nothing was pushed and it needs a person."
+            exit 0
+          fi
+
+          git push origin "HEAD:refs/heads/${branch}"
+          # The same issue marker the original carried, so every reader that asks which issue
+          # a pull request belongs to gets the same answer for both halves of the hotfix.
+          # Built with printf rather than written inline: a body line starting at column
+          # zero ends the YAML literal block this step is written in, and the router then
+          # fails to parse at install time rather than here.
+          body="$(printf '%s\n\n%s\n' \
+            "Carries the hotfix that landed on \`${BASE_REF}\` in #${PR} back to \`${TRUNK}\`, so the next release branch is cut with it." \
+            "<!-- implement-issue: ${ISSUE} -->")"
+          gh pr create --repo "$REPO" --base "$TRUNK" --head "$branch" \
+            --title "${TITLE_PREFIX}carry hotfix #${ISSUE} back to ${TRUNK}" \
+            --body "$body"
+          echo "carried=true" >> "$GITHUB_OUTPUT"
+      - name: Record the outcome
+        if: always() && steps.decide.outputs.carry == 'true'
+        uses: ./.github/actions/record-outcome
+        with:
+          outcome: ${{ steps.carry.outputs.carried == 'true' && 'acted' || 'handed-to-human' }}
+          reason: ${{ steps.carry.outputs.carried == 'true' && 'acted' || 'conflict-handed-off' }}
+          route: stage-merge
+          subject: ${{ format('#{0}', steps.decide.outputs.issue) }}
+          detail: "${{ steps.carry.outputs.carried == 'true' && format('The hotfix on {0} is on its way back to {1}.', needs.classify.outputs.pr-base, 'the trunk') || 'The hotfix does not apply cleanly onto the trunk; nothing was pushed.' }}"
+
+  detect-pr-conflicts:
+    needs: classify
+    if: >
+      github.event_name == 'pull_request_target' &&
+      (
+        (github.event.action == 'closed' && github.event.pull_request.merged == true) ||
+        (
+          (github.event.action == 'opened' ||
+           github.event.action == 'reopened' ||
+           github.event.action == 'synchronize') &&
+          github.event.pull_request.head.repo.full_name == github.repository
+        )
+      )
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+      actions: write
+    steps:
+      - name: Checkout for App token action
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Generate App token
+        id: app-token
+        uses: actions/create-github-app-token@df432ceedc7162793a195dd1713ff69aefc7379e # v2.0.6
+        with:
+          app-id: ${{ secrets.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_PRIVATE_KEY }}
+      - name: Dispatch Merge Gate for conflicting bot pull requests
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REPO: ${{ github.repository }}
+          # The repository default branch, deliberately, and not the profile's branch point: a
+          # dispatch runs the workflow file at the ref it names, and every event-triggered run
+          # executes the default-branch copy, so a dispatch at `cutFrom` would run whatever
+          # router that branch happens to hold. Under a chain that is a stale one (FR-025).
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          ACTION: ${{ github.event.action }}
+          EVENT_PR: ${{ github.event.pull_request.number }}
+          # The branch the merged pull request moved, which is the only branch whose open
+          # pull requests this merge can have invalidated (FR-037).
+          MERGED_BASE: ${{ github.event.pull_request.base.ref }}
+        run: |
+          set -euo pipefail
+          # The issue a pull request belongs to is the App's marker, not a closing keyword:
+          # this loop no longer writes keywords, so the forge's own link is empty for every
+          # pull request it opens. One rule, in one file, sourced (FR-030).
+          # shellcheck source=../actions/resolve-pr-issue/resolve-pr-issue.sh
+          . "$GITHUB_WORKSPACE/.github/actions/resolve-pr-issue/resolve-pr-issue.sh"
+
+          # Dispatch the Merge Gate for one pull request when it is a red-CI open, non-draft,
+          # bot-authored pull request on this repository whose CI has concluded — the
+          # conflict case is one arm of that, because a conflicting PR never gets a fresh
+          # CI run of its own; a merge conflict with red or concluded CI is the same
+          # "needs the gate" signal. A green non-conflicting PR is left for the merge belt
+          # to pick up when its checks finish (bot-approve / reconcile).
+          # GitHub computes mergeability on demand. The first read of a pull request nobody has
+          # opened recently answers UNKNOWN through the API and null through REST, while it works
+          # the answer out in the background. Reading once therefore reports "not conflicting"
+          # for precisely the stale conflicting pull requests that need the gate. Ask until it
+          # settles.
+          mergeable_state() {
+            local pr="$1" state=UNKNOWN
+            for _ in 1 2 3 4 5 6; do
+              state=$(gh pr view "$pr" --repo "$REPO" --json mergeable --jq '.mergeable' 2>/dev/null || echo UNKNOWN)
+              [ "$state" = "UNKNOWN" ] || break
+              sleep 5
+            done
+            echo "$state"
+          }
+
+          # A gate already queued or running for this pull request will read the same CI verdict;
+          # a second dispatch queues behind merge-belt and the single-slot queue cancels it.
+          #
+          # So this is a pre-filter too: `merge-belt-<base>` is what makes a duplicate gate
+          # harmless, and this only avoids starting one. It matches the exact title a *dispatch*
+          # renders, which is the only shape that carries a pull request number -- a gate a
+          # human starts with the `merge-gate` label, or one a failed CI run triggers, has a
+          # different run name and is invisible here. That is acceptable for a filter and would
+          # not be for a guard, which is the distinction worth keeping in mind before this is
+          # ever relied on for correctness.
+          gate_is_live() {
+            local pr="$1" status live
+            for status in queued in_progress waiting pending; do
+              live=$(gh api "repos/$REPO/actions/workflows/work-router.yml/runs?status=$status&per_page=100" \
+                --jq "[.workflow_runs[] | select(.display_title == \"Working (Merge Gate): PR #${pr}\")] | length" 2>/dev/null || echo 0)
+              [ "${live:-0}" -eq 0 ] || return 0
+            done
+            return 1
+          }
+
+          maybe_dispatch() {
+            pr="$1"
+            [ -n "$pr" ] || return 0
+
+            meta=$(gh api "repos/$REPO/pulls/$pr" \
+              --jq '{state:.state, draft:.draft, bot:.user.type, head:(.head.repo.full_name // "")}' \
+              2>/dev/null || echo '')
+            [ -n "$meta" ] || return 0
+            if [ "$(jq -r '.state' <<<"$meta")" != "open" ] \
+              || [ "$(jq -r '.draft' <<<"$meta")" != "false" ] \
+              || [ "$(jq -r '.bot'   <<<"$meta")" != "Bot" ] \
+              || [ "$(jq -r '.head'  <<<"$meta")" != "$REPO" ]; then
+              return 0
+            fi
+
+            # Only dispatch when CI has already concluded. A conflict while CI is still
+            # running is handled by the CI-completion route; dispatching now would make the
+            # gate read a 'pending' conclusion and prematurely ask for human review.
+            head_sha=$(gh api "repos/$REPO/pulls/$pr" --jq '.head.sha')
+            ci=$(gh api "repos/$REPO/actions/runs?head_sha=$head_sha&per_page=100" \
+              --jq '[.workflow_runs[]
+                | select(.name == "CI" and .status == "completed"
+                         and (.conclusion == "success" or .conclusion == "failure"))]
+                | sort_by(.created_at) | last // empty')
+            if [ -z "$ci" ]; then
+              # A conflicting pull request has no merge ref for GitHub to build, so a
+              # `pull_request` CI workflow can never run on that head: refs/pull/N/merge is a
+              # 404 for as long as the conflict lasts. Waiting for a verdict that cannot arrive
+              # deadlocks the belt, because resolving the conflict is the gate's own job. Fall
+              # back to the branch's last verdict so the gate runs; it stays on the remediation
+              # path and cannot merge on a stale conclusion.
+              head_ref=$(gh api "repos/$REPO/pulls/$pr" --jq '.head.ref')
+              mergeable_now=$(mergeable_state "$pr")
+              if [ "$mergeable_now" != "CONFLICTING" ]; then
+                echo "PR #$pr has no concluded CI run; deferring to the CI-completion route."
+                return 0
+              fi
+              ci=$(gh api "repos/$REPO/actions/runs?branch=$head_ref&per_page=100" \
+                --jq '[.workflow_runs[]
+                  | select(.name == "CI" and .status == "completed"
+                           and (.conclusion == "success" or .conclusion == "failure"))]
+                  | sort_by(.created_at) | last // empty')
+              if [ -z "$ci" ]; then
+                echo "PR #$pr conflicts and has no CI verdict on any head; nothing to gate on yet."
+                return 0
+              fi
+              echo "PR #$pr conflicts, so CI cannot run on $head_sha at all; gating on the branch's last verdict."
+            fi
+            ci_conclusion=$(jq -r '.conclusion' <<<"$ci")
+            ci_finished=$(jq -r '.updated_at' <<<"$ci")
+            ci_run_id=$(jq -r '.id' <<<"$ci")
+
+            # GitHub computes mergeability asynchronously; poll until it is known (not null).
+            mergeable=""
+            for _ in 1 2 3 4 5 6; do
+              mergeable=$(gh api "repos/$REPO/pulls/$pr" --jq '.mergeable // "null"' 2>/dev/null || echo null)
+              [ "$mergeable" = "null" ] || break
+              sleep 5
+            done
+
+            if [ "$mergeable" != "false" ] && [ "$ci_conclusion" != "failure" ]; then
+              # Mergeable and green: the reconcile belt and the PR's own checks finish it.
+              return 0
+            fi
+
+            # A terminal verdict newer than this CI run means a gate already decided;
+            # failed attempts (the attempt marker) deliberately do not count.
+            verdict=$(gh api "repos/$REPO/issues/$pr/comments?per_page=100" \
+              --jq '[.[] | select((.body | contains("<!-- agent-merge-gate -->")) and (.body | contains("**Verdict:**"))) | .created_at] | max // empty')
+            # Every issue this pull request carries, not the first of them. A promotion under
+            # `env-promotion` carries the set that merged into the stage below, so a budget
+            # counted against one of them is a fraction of the budget the gate is meant to have,
+            # and a verdict recorded on another of them would not be seen at all (FR-056).
+            carried_issues="$(pr_issues "$pr")"
+            while IFS= read -r linked_issue; do
+              [ -n "$linked_issue" ] || continue
+              issue_verdict=$(gh api "repos/$REPO/issues/$linked_issue/comments?per_page=100" \
+                --jq '[.[] | select((.body | contains("<!-- agent-merge-gate -->")) and (.body | contains("**Verdict:**"))) | .created_at] | max // empty')
+              if [ -n "$issue_verdict" ] && { [ -z "$verdict" ] || [ "$issue_verdict" \> "$verdict" ]; }; then
+                verdict="$issue_verdict"
+              fi
+            done <<< "$carried_issues"
+            if [ -n "$verdict" ] && [ "$verdict" \> "$ci_finished" ]; then
+              echo "PR #$pr already has a gate verdict newer than CI; skipping."
+              return 0
+            fi
+
+            attempts=$(gh api "repos/$REPO/issues/$pr/comments?per_page=100" \
+              --jq '[.[] | select(.body | contains("<!-- agent-merge-gate-attempt -->")) | select(.created_at > "'"$ci_finished"'") ] | length')
+            while IFS= read -r linked_issue; do
+              [ -n "$linked_issue" ] || continue
+              issue_attempts=$(gh api "repos/$REPO/issues/$linked_issue/comments?per_page=100" \
+                --jq '[.[] | select(.body | contains("<!-- agent-merge-gate-attempt -->")) | select(.created_at > "'"$ci_finished"'") ] | length')
+              attempts=$((attempts + issue_attempts))
+            done <<< "$carried_issues"
+            if [ "$attempts" -ge 6 ]; then
+              echo "PR #$pr already consumed $attempts gate attempts on this CI verdict, parking for review."
+              return 0
+            fi
+            if gate_is_live "$pr"; then
+              echo "PR #$pr: a merge-gate run is already live; not dispatching another."
+              return 0
+            fi
+
+            echo "PR #$pr is $([ "$mergeable" = "false" ] && echo conflicting || echo red-CI) (CI $ci_conclusion); dispatching Merge Gate (attempt $((attempts + 1)) of 6)."
+            gh api "repos/$REPO/actions/workflows/work-router.yml/dispatches" \
+              --method POST \
+              -f ref="$DEFAULT_BRANCH" \
+              -f "inputs[operation]=merge-gate" \
+              -f "inputs[pr-number]=$pr" \
+              -f "inputs[ci-conclusion]=$ci_conclusion" \
+              -f "inputs[ci-run-id]=$ci_run_id" \
+                -f "inputs[attempts_so_far]=$attempts"
+          }
+
+          if [ "$ACTION" = "closed" ]; then
+            # One branch just moved, so only the pull requests aimed at that branch can have
+            # been invalidated: a merge into `dev` cannot conflict a promotion into `test`,
+            # which is built on a tip that did not change (FR-037). Rescanning everything
+            # open was a chain's worth of mergeability polls per merge -- six reads each,
+            # five seconds apart -- and every gate it dispatched read a pull request whose
+            # base was somewhere else.
+            #
+            # The base comes through the environment rather than the jq string, so a branch
+            # name cannot close the quoting and add a filter of its own.
+            gh api "repos/$REPO/pulls?state=open&per_page=100" \
+              --jq '.[] | select(.user.type == "Bot" and .draft == false and .base.ref == env.MERGED_BASE) | .number' |
+              while IFS= read -r pr; do
+                maybe_dispatch "$pr"
+              done
+          else
+            maybe_dispatch "$EVENT_PR"
+          fi
+      # A sweep's no-action case is per pull request, not per run: the step above says what
+      # it decided about each one, and this says the sweep itself reached the end of the
+      # list. A job that died half way through otherwise looks like one that found nothing.
+      - name: Record the outcome
+        if: always()
+        uses: ./.github/actions/record-outcome
+        with:
+          outcome: ${{ job.status == 'success' && 'acted' || 'failed' }}
+          reason: ${{ job.status == 'success' && 'acted' || 'invalid-input' }}
+          route: detect-pr-conflicts
+          detail: "${{ job.status == 'success' && 'Swept the bot pull requests for conflicts and failed CI; the step log names each one and what was decided.' || 'The conflict sweep did not finish; the step log names the last pull request it reached.' }}"
+
+  reconcile-bot-pr-runs:
+    needs: classify
+    if: needs.classify.outputs.route == 'reconcile-bot-pr-runs'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: write
+      pull-requests: read
+      # the stale reservation sweep clears bot-working from parked issues
+      issues: write
+    env:
+      # How long a bot pull request may sit with no CI run before it is a person's problem
+      # rather than an hourly log line (FR-069).
+      CI_WAIT_MINUTES: "45"
+      CI_WORKFLOW_NAME: "CI"
+      REVIEW_LABEL: "review"
+    steps:
+      - name: Checkout for App token action
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Generate App token
+        id: app-token
+        uses: actions/create-github-app-token@df432ceedc7162793a195dd1713ff69aefc7379e # v2.0.6
+        with:
+          app-id: ${{ secrets.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_PRIVATE_KEY }}
+      # Runs only the default-branch workflow and never checks out pull-request code.
+      # External users cannot impersonate github-actions[bot].
+      - name: Approve checks and dispatch Merge Gate for trusted bot pull requests
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REPO: ${{ github.repository }}
+          # The repository default branch, deliberately, and not the profile's branch point: a
+          # dispatch runs the workflow file at the ref it names, and every event-triggered run
+          # executes the default-branch copy, so a dispatch at `cutFrom` would run whatever
+          # router that branch happens to hold. Under a chain that is a stale one (FR-025).
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          # The issue a pull request belongs to is the App's marker, not a closing keyword:
+          # this loop no longer writes keywords, so the forge's own link is empty for every
+          # pull request it opens. One rule, in one file, sourced (FR-030).
+          # shellcheck source=../actions/resolve-pr-issue/resolve-pr-issue.sh
+          . "$GITHUB_WORKSPACE/.github/actions/resolve-pr-issue/resolve-pr-issue.sh"
+
+          # GitHub computes mergeability on demand. The first read of a pull request nobody has
+          # opened recently answers UNKNOWN through the API and null through REST, while it works
+          # the answer out in the background. Reading once therefore reports "not conflicting"
+          # for precisely the stale conflicting pull requests that need the gate. Ask until it
+          # settles.
+          mergeable_state() {
+            local pr="$1" state=UNKNOWN
+            for _ in 1 2 3 4 5 6; do
+              state=$(gh pr view "$pr" --repo "$REPO" --json mergeable --jq '.mergeable' 2>/dev/null || echo UNKNOWN)
+              [ "$state" = "UNKNOWN" ] || break
+              sleep 5
+            done
+            echo "$state"
+          }
+
+          # A gate already queued or running for this pull request will read the same CI verdict;
+          # a second dispatch queues behind merge-belt and the single-slot queue cancels it.
+          # A pre-filter, as in the reconcile belt: the concurrency group is the mechanism, and
+          # this matches only the title a dispatch renders.
+          gate_is_live() {
+            local pr="$1" status live
+            for status in queued in_progress waiting pending; do
+              live=$(gh api "repos/$REPO/actions/workflows/work-router.yml/runs?status=$status&per_page=100" \
+                --jq "[.workflow_runs[] | select(.display_title == \"Working (Merge Gate): PR #${pr}\")] | length" 2>/dev/null || echo 0)
+              [ "${live:-0}" -eq 0 ] || return 0
+            done
+            return 1
+          }
+
+          # Stale reservation sweep. Labelling ten issues at once labels all ten immediately,
+          # because authorize-bot-work is keyed per issue, while the implement concurrency group
+          # lets only as many run at a time as the profile allows. A queued run that is cancelled
+          # therefore leaves its issue carrying bot-working with no run and no pull request:
+          # parked, invisible, and not re-triggerable, because classify refuses an issue that is
+          # already reserved.
+          #
+          # This clears a reservation, so both gates have to be right. Two were not.
+          #
+          # The pull request gate searched bodies for `closes #N`. This loop stopped writing
+          # closing keywords when the issue link became an App-authored comment (FR-030, T104,
+          # T114), so it matched nothing for any issue and always answered "no pull request".
+          # The gate was therefore off, and the only thing standing between a live change and a
+          # cleared reservation was the run gate beside it. It now reads the App's own record,
+          # through the same script `resolve-change-linkage` uses, so the two cannot drift.
+          #
+          # The run gate matched `#N` anywhere in a run title, which is every route: a live
+          # triage or merge-gate run for the issue kept an abandoned implement reservation
+          # alive. It now counts implement runs only, by the two shapes an implement run name
+          # takes, anchored to the end of the title -- the same rule the duplicate guard uses.
+          gh issue list --repo "$REPO" --label bot-working --state open --limit 100 \
+            --json number --jq '.[].number' |
+            while IFS= read -r issue; do
+              [ -n "$issue" ] || continue
+
+              live=$(gh api "repos/$REPO/actions/runs?per_page=100" \
+                --jq "[.workflow_runs[]
+                  | select(.status == \"queued\" or .status == \"in_progress\" or .status == \"pending\" or .status == \"waiting\")
+                  | select((.display_title | startswith(\"Working (Implement)\")) and ((.display_title | endswith(\"(#${issue})\")) or (.display_title | endswith(\": #${issue}\"))))
+                ] | length" 2>/dev/null || echo 1)
+              [ "${live:-1}" -eq 0 ] || continue
+
+              # GITHUB_OUTPUT is set inside a step and the script appends there when it is,
+              # so it has to be pointed at stdout to be read here. Otherwise this captures
+              # nothing and quietly writes three keys into the job's own outputs.
+              linked_pr=$(GITHUB_OUTPUT=/dev/stdout GH_TOKEN="$GH_TOKEN" REPO="$REPO" ISSUE_NUMBER="$issue" \
+                BOT_LOGIN="personalcorpacc-agentic-loop[bot]" \
+                bash ./.github/actions/resolve-change-linkage/resolve-change-linkage.sh 2>/dev/null |
+                sed -n 's/^pr=//p' | head -1)
+              if [ -n "${linked_pr:-}" ]; then
+                state=$(gh pr view "$linked_pr" --repo "$REPO" --json state --jq .state 2>/dev/null || echo UNKNOWN)
+                # UNKNOWN as well as OPEN: a reservation is only cleared on an answer, never on
+                # a failed lookup. The cost of keeping one is a delay; the cost of clearing a
+                # live one is a second agent on work that is already done.
+                [ "$state" = "MERGED" ] || [ "$state" = "CLOSED" ] || continue
+              fi
+
+              echo "Clearing a stale bot-working reservation on #$issue: no implement run, no open pull request."
+              gh issue edit "$issue" --repo "$REPO" --remove-label bot-working
+            done
+
+          gh api "repos/$REPO/pulls?state=open&per_page=100" |
+            jq -r --arg repo "$REPO" '
+              .[]
+              | select(
+                    (.user.login == "github-actions[bot]" or .user.login == "app/github-actions" or .user.login == "personalcorpacc-agentic-loop[bot]")
+                    and .draft == false
+                    and .head.repo.full_name == $repo
+                 )
+              | [.number, .head.ref, .head.sha] | @tsv
+            ' |
+            while IFS=$'\t' read -r pr_number branch head_sha; do
+              gh api "repos/$REPO/actions/runs?status=action_required&branch=$branch" \
+                --jq '.workflow_runs[]
+                  | select(
+                      .event == "pull_request"
+                      and .name == "CI"
+                    )
+                  | .id' |
+                while IFS= read -r run_id; do
+                  echo "Approving trusted bot run $run_id"
+                  gh api "repos/$REPO/actions/runs/$run_id/approve" --method POST
+                done
+
+              ci=$(gh api "repos/$REPO/actions/runs?head_sha=$head_sha&per_page=100" \
+                --jq '[.workflow_runs[]
+                  | select(
+                      .name == "CI"
+                      and .event == "pull_request"
+                      and .status == "completed"
+                      and (.conclusion == "success" or .conclusion == "failure")
+                    )
+                  ] | sort_by(.created_at) | last // empty | [.id, .conclusion, .updated_at] | @tsv')
+              if [ -z "$ci" ]; then
+                # A conflicting pull request has no merge ref for GitHub to build, so a
+                # `pull_request` CI workflow can never run on that head: refs/pull/N/merge is a
+                # 404 for as long as the conflict lasts. Waiting for a verdict that cannot arrive
+                # deadlocks the belt, because resolving the conflict is the gate's own job. Fall
+                # back to the branch's last verdict so the gate runs; it stays on the remediation
+                # path and cannot merge on a stale conclusion.
+                mergeable_now=$(mergeable_state "$pr_number")
+                if [ "$mergeable_now" = "CONFLICTING" ]; then
+                  ci=$(gh api "repos/$REPO/actions/runs?branch=$branch&per_page=100" \
+                    --jq '[.workflow_runs[]
+                      | select(
+                          .name == "CI"
+                          and .event == "pull_request"
+                          and .status == "completed"
+                          and (.conclusion == "success" or .conclusion == "failure")
+                        )
+                      ] | sort_by(.created_at) | last // empty | [.id, .conclusion, .updated_at] | @tsv')
+                fi
+                if [ -z "$ci" ]; then
+                  # A pull request opened with the workflow token raises no events, so its CI
+                  # may never start at all (FR-069). Warning about it every hour is a message
+                  # nobody reads and a pull request nobody looks at, so after the wait it
+                  # becomes a review: the label is what a person sees. The comment is written
+                  # once, keyed on its own marker, because the belt runs hourly for ever.
+                  opened_at=$(gh pr view "$pr_number" --repo "$REPO" --json createdAt --jq '.createdAt' 2>/dev/null || echo '')
+                  waited=0
+                  if [ -n "$opened_at" ]; then
+                    opened_epoch=$(date -u -d "$opened_at" +%s 2>/dev/null || echo 0)
+                    now_epoch=$(date -u +%s)
+                    [ "$opened_epoch" -gt 0 ] && waited=$(( (now_epoch - opened_epoch) / 60 ))
+                  fi
+
+                  if [ "$waited" -lt "${CI_WAIT_MINUTES:-45}" ]; then
+                    echo "PR #$pr_number head $head_sha has no completed $CI_WORKFLOW_NAME run yet (${waited}m of ${CI_WAIT_MINUTES:-45}m); the belt will look again."
+                    continue
+                  fi
+
+                  marker='<!-- no-ci-run -->'
+                  already=$(gh api "repos/$REPO/issues/$pr_number/comments?per_page=100" \
+                    --jq "[.[] | select(.body | contains(\"$marker\"))] | length" 2>/dev/null || echo 0)
+                  if [ "${already:-0}" -eq 0 ]; then
+                    body="${marker}"$'\n\n'"No ${CI_WORKFLOW_NAME} run has appeared on this pull request head after ${waited} minutes, so the merge gate has nothing to read and cannot decide anything."$'\n\n'"A pull request opened with the workflow token raises no events, which is the usual cause. The remedy is the framework App-token trigger: an empty commit pushed with the App identity, which is an event the forge does deliver. See the consumer skill, section: When no CI run appears on a bot pull request."
+                    gh pr comment "$pr_number" --repo "$REPO" --body "$body"
+                  fi
+                  if [ -n "$linked_issue" ]; then
+                    gh issue edit "$linked_issue" --repo "$REPO" --add-label "$REVIEW_LABEL" >/dev/null 2>&1 || true
+                  fi
+                  echo "::warning::PR #$pr_number head $head_sha has no completed $CI_WORKFLOW_NAME run after ${waited}m; handed to a human."
+                  continue
+                fi
+                echo "PR #$pr_number conflicts, so CI cannot run on $head_sha at all; gating on the branch's last verdict."
+              fi
+
+              IFS=$'\t' read -r ci_run_id ci_conclusion ci_finished <<<"$ci"
+
+              # A verdict is a comment carrying BOTH the gate marker and a `**Verdict:**`
+              # line; progress comments and failed attempts deliberately carry neither
+              # matching pair, so a crashed or OOM-killed gate never masks a PR from
+              # later sweeps. A recorded verdict only counts when it is NEWER than the
+              # latest CI run; the old existence check made the gate one-shot per PR.
+              # Attempts are failed gates (the attempt marker) since this CI verdict.
+              latest_verdict=$(gh api "repos/$REPO/issues/$pr_number/comments?per_page=100" \
+                --jq '[.[] | select((.body | contains("<!-- agent-merge-gate -->")) and (.body | contains("**Verdict:**"))) | .created_at] | max // empty')
+              # Every issue this pull request carries, not the first of them. A promotion under
+              # `env-promotion` carries the set that merged into the stage below, so a budget
+              # counted against one of them is a fraction of the budget the gate is meant to have,
+              # and a verdict recorded on another of them would not be seen at all (FR-056).
+              carried_issues="$(pr_issues "$pr_number")"
+              while IFS= read -r linked_issue; do
+                [ -n "$linked_issue" ] || continue
+                issue_verdict=$(gh api "repos/$REPO/issues/$linked_issue/comments?per_page=100" \
+                  --jq '[.[] | select((.body | contains("<!-- agent-merge-gate -->")) and (.body | contains("**Verdict:**"))) | .created_at] | max // empty')
+                if [ -n "$issue_verdict" ] && { [ -z "$latest_verdict" ] || [ "$issue_verdict" \> "$latest_verdict" ]; }; then
+                  latest_verdict="$issue_verdict"
+                fi
+              done <<< "$carried_issues"
+              if [ -n "$latest_verdict" ] && [ "$latest_verdict" \> "$ci_finished" ]; then
+                echo "Merge gate verdict ($latest_verdict) is newer than CI ($ci_finished) for PR #$pr_number, skipping"
+                continue
+              fi
+
+              attempts=$(gh api "repos/$REPO/issues/$pr_number/comments?per_page=100" \
+                --jq '[.[] | select(.body | contains("<!-- agent-merge-gate-attempt -->")) | select(.created_at > "'"$ci_finished"'") ] | length')
+              while IFS= read -r linked_issue; do
+                [ -n "$linked_issue" ] || continue
+                issue_attempts=$(gh api "repos/$REPO/issues/$linked_issue/comments?per_page=100" \
+                  --jq '[.[] | select(.body | contains("<!-- agent-merge-gate-attempt -->")) | select(.created_at > "'"$ci_finished"'") ] | length')
+                attempts=$((attempts + issue_attempts))
+              done <<< "$carried_issues"
+              if [ "$attempts" -ge 6 ]; then
+                echo "PR #$pr_number already consumed $attempts gate attempts on this CI verdict, parking for review"
+                continue
+              fi
+              if gate_is_live "$pr_number"; then
+                echo "PR #$pr_number: a merge-gate run is already live; not dispatching another."
+                continue
+              fi
+
+              echo "Dispatching Merge Gate for PR #$pr_number ($ci_conclusion, run $ci_run_id, attempt $((attempts + 1)) of 6)"
+              gh api "repos/$REPO/actions/workflows/work-router.yml/dispatches" \
+                --method POST \
+                -f ref="$DEFAULT_BRANCH" \
+                -f "inputs[operation]=merge-gate" \
+                -f "inputs[pr-number]=$pr_number" \
+                -f "inputs[ci-conclusion]=$ci_conclusion" \
+                -f "inputs[ci-run-id]=$ci_run_id" \
+                -f "inputs[attempts_so_far]=$attempts"
+            done
+      - name: Record the outcome
+        if: always()
+        uses: ./.github/actions/record-outcome
+        with:
+          outcome: ${{ job.status == 'success' && 'acted' || 'failed' }}
+          reason: ${{ job.status == 'success' && 'acted' || 'invalid-input' }}
+          route: reconcile-bot-pr-runs
+          detail: "${{ job.status == 'success' && 'Reconciled the bot pull requests and the stale reservations; the step log names each one and what was decided.' || 'The hourly reconcile did not finish; the step log names the last pull request it reached.' }}"
+
+  # Named `promote`, not `call-promote`: that prefix belongs to jobs that call a worker with
+  # an agent inside it, and the metrics collector matches on it. This job runs no model at
+  # all -- which commits are eligible, and where they go, is arithmetic over the forge and
+  # the clock (research R2, FR-031).
+  #
+  # Three permissions rather than write-all: it writes branches, opens pull requests and
+  # labels issues, and nothing else. A route that runs no agent has no excuse for a token
+  # that can do anything.
+  #
+  # The schedule can fire again while a run is still working through its targets one at a
+  # time, so the group is held rather than cancelled: cancelling mid-promotion leaves a
+  # branch pushed and no pull request opened.
+  promote:
+    needs: classify
+    if: needs.classify.outputs.route == 'promote'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    concurrency:
+      group: promote
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Checkout workflow actions
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Create bot token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ secrets.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_PRIVATE_KEY }}
+      - name: Promote the changes that are ready
+        id: promote
+        uses: ./.github/actions/promote-change
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+      - name: Record the outcome
+        if: always()
+        uses: ./.github/actions/record-outcome
+        with:
+          # A step that died reported `acted / promoted` with a hole where the count goes,
+          # because an unset output is an empty string and an empty string is not '0'. The
+          # step's own result is asked first, so a failed promotion says it failed (FR-058).
+          outcome: ${{ steps.promote.outcome == 'failure' && 'failed' || steps.promote.outputs.promoted == '0' && 'no-action' || 'acted' }}
+          reason: ${{ steps.promote.outcome == 'failure' && 'promotion-failed' || steps.promote.outputs.promoted == '0' && (steps.promote.outputs.reason || 'no-eligible-change') || 'promoted' }}
+          route: promote
+          # Not "opened N pull requests": under `release-branch` this route cuts a branch and
+          # opens nothing, and it reported opening one anyway. The count is of things moved,
+          # and the step log is where the reader finds out what kind (FR-055, FR-058).
+          detail: "${{ steps.promote.outcome == 'failure' && 'The promotion route stopped on an error; the step log says which change it was working on.' || steps.promote.outputs.promoted == '0' && 'Nothing was ready to promote; the step log says what was considered and why each one waited.' || format('The promotion route moved {0} thing(s); the step log says which.', steps.promote.outputs.promoted) }}"
+
+  # The other direction of the chain, and named `sync-stages` for the same reason `promote`
+  # is not `call-sync-stages`: no model runs here at all. Which content an earlier stage is
+  # missing is a patch-id comparison, and carrying it is a cherry-pick (FR-079).
+  #
+  # The same three permissions as `promote`, and for the same reason: it writes a branch and
+  # opens a pull request, and a route with no agent in it has no excuse for a token that can
+  # do anything. It writes no labels, so it does not ask for `issues: write` either.
+  #
+  # Held rather than cancelled, because a run cancelled mid-carry leaves a branch pushed and
+  # no pull request opened.
+  sync-stages:
+    needs: classify
+    if: needs.classify.outputs.route == 'sync-stages'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    concurrency:
+      group: sync-stages
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout workflow actions
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Create bot token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ secrets.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_PRIVATE_KEY }}
+      - name: Carry what the earlier stages are missing
+        id: sync
+        uses: ./.github/actions/sync-stages
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          auto-merge-mode: "always"
+          auto-merge-targets: "dev,test"
+      - name: Record the outcome
+        if: always()
+        uses: ./.github/actions/record-outcome
+        with:
+          # The reason is read before the count: a run that repaired two hops and handed a
+          # third to a person is handed-to-human, because that is the part somebody has to
+          # act on (FR-086, FR-058).
+          outcome: ${{ steps.sync.outputs.reason == 'conflict-handed-off' && 'handed-to-human' || steps.sync.outputs.opened == '0' && 'no-action' || 'acted' }}
+          reason: ${{ steps.sync.outputs.reason || (steps.sync.outputs.opened == '0' && 'stages-aligned' || 'acted') }}
+          route: sync-stages
+          detail: "${{ steps.sync.outputs.opened == '0' && 'Every stage carries the content of the ones after it, or the step log says which pair could not be carried and why.' || format('Opened {0} pull request(s) carrying content back down the chain.', steps.sync.outputs.opened) }}"
+
+  audit-close:
+    needs: classify
+    if: needs.classify.outputs.route == 'audit-close'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    concurrency:
+      group: audit-close
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Checkout workflow actions
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/audit-close
+        with:
+          token: ${{ github.token }}
+      - name: Record the outcome
+        if: always()
+        uses: ./.github/actions/record-outcome
+        with:
+          outcome: acted
+          reason: acted
+          route: audit-close
+          detail: "Swept the audit issues whose window has closed."
+
+  cleanup-artifacts:
+    needs: classify
+    if: needs.classify.outputs.route == 'cleanup-artifacts' && !github.event.repository.fork
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    concurrency:
+      group: cleanup-artifacts
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - name: Checkout workflow actions
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/cleanup-artifacts
+        with:
+          token: ${{ github.token }}
+          artifact-retention-days: ${{ vars.ARTIFACT_RETENTION_DAYS }}
+      - name: Record the outcome
+        if: always()
+        uses: ./.github/actions/record-outcome
+        with:
+          outcome: acted
+          reason: acted
+          route: cleanup-artifacts
+          detail: "Swept the agent artifacts past their retention window."
+
+  validate:
+    needs: classify
+    if: needs.classify.outputs.route == 'validate'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout workflow actions
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/verify-route-matrix
+      - uses: ./.github/actions/verify-composite-actions
+      # A credential that exists is not a credential that works. `doctor --forge` can see
+      # the secret is set and can see nothing else, because the value is only readable here;
+      # and a key with no credit answers every read-only endpoint happily and refuses only
+      # at inference. So this spends one token to ask (FR-087), which is the difference
+      # between finding out now and finding out after an issue has been reserved, an agent
+      # has started and a runner has been paid for.
+      - name: Ask whether the model credential can pay
+        id: credit
+        if: always()
+        env:
+          CREDENTIAL: ${{ secrets.ANTHROPIC_API_KEY }}
+          PROBE: "anthropic-messages"
+          MODEL: "claude-sonnet-5"
+          REFUSAL_SIGNATURE: "billing_error|credit balance is too low"
+        run: |
+          set -uo pipefail
+          if [ -z "${PROBE:-}" ]; then
+            echo "::notice::No credit probe is characterised for this repository's engine, so whether the account will pay is unknown until an agent runs. The engine table names a probe only for the shapes this project has watched succeed and fail."
+            exit 0
+          fi
+          if [ -z "${CREDENTIAL:-}" ]; then
+            echo "::error::The model credential secret is empty, so no agent can run at all."
+            exit 1
+          fi
+
+          case "$PROBE" in
+            anthropic-messages)
+              answer="$(curl --silent --show-error --max-time 30 \
+                -H "x-api-key: ${CREDENTIAL}" \
+                -H "anthropic-version: 2023-06-01" \
+                -H "content-type: application/json" \
+                -d "{\"model\":\"${MODEL}\",\"max_tokens\":1,\"messages\":[{\"role\":\"user\",\"content\":\".\"}]}" \
+                https://api.anthropic.com/v1/messages 2>&1)"
+              ;;
+            *)
+              echo "::warning::${PROBE} is named as this engine's credit probe and this router does not implement it; treating the account as unknown."
+              exit 0
+              ;;
+          esac
+
+          # The status is not the answer: a refusal is a 400 like several other things, and
+          # the provider's own words are what the implement worker stops on too.
+          if printf '%s' "$answer" | grep -qiE "${REFUSAL_SIGNATURE}"; then
+            echo "::error::The account behind this repository's model credential will not pay: the provider answered with its refusal. Nothing else here is wrong, and no agent can run until it is topped up."
+            exit 1
+          fi
+          echo "::notice::The model credential answered, so the account will pay for a run."
+      - name: Record the outcome
+        if: always()
+        uses: ./.github/actions/record-outcome
+        with:
+          outcome: ${{ job.status == 'success' && 'acted' || 'failed' }}
+          reason: ${{ job.status == 'success' && 'acted' || steps.credit.outcome == 'failure' && 'no-model-credit' || 'invalid-input' }}
+          route: validate
+          detail: "${{ job.status == 'success' && 'The route matrix and every composite manifest agree with the installed files, and the model credential can pay.' || steps.credit.outcome == 'failure' && 'The installed files agree, but the account behind the model credential will not pay for a run.' || 'The route matrix or a composite manifest disagrees with the installed files; the run log names which.' }}"

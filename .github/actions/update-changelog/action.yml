@@ -1,0 +1,64 @@
+# Managed by @plainconceptsplatform/workflows@0.5.1. Source: loops/actions/update-changelog/action.yml. Profile digest: 08448fbaf1f8. Update with `workflows update --force`; consumer edits may be overwritten.
+name: Update changelog
+description: >
+  Prepend a changelog entry for a landed issue and commit it onto the branch the caller is
+  already on -- a promotion head, not a stage. Pushing a stage directly is rejected by
+  protection on every human-gated one, which is every stage worth protecting (FR-031).
+
+inputs:
+  token:
+    description: Token with contents write on the repository.
+    required: true
+  issue-number:
+    description: Issue the landed commit implements.
+    required: true
+  commit-sha:
+    description: Commit the work landed as. Its subject becomes the summary.
+    required: true
+  changelog-path:
+    description: Path to the changelog document, from the profile.
+    required: false
+    default: 'CHANGELOG.json'
+  head-branch:
+    description: >-
+      The branch to commit onto, which the promotion route has already created and checked
+      out. Empty means the branch this job is on, which is the ordinary case; naming a stage
+      here would push a protected branch and be rejected.
+    required: false
+    default: ''
+  git-identity:
+    description: The login the commit is authored as, from the profile.
+    required: false
+    default: 'personalcorpacc-agentic-loop[bot]'
+  max-entries:
+    description: Newest entries to keep.
+    required: false
+    default: "20"
+  stage:
+    description: >-
+      The stage this entry would be recorded for. Empty means the caller has already decided,
+      which is how a non-promotion caller asks for an entry unconditionally.
+    required: false
+    default: ''
+  changelog-stages:
+    description: Stages whose promotion records an entry, from the profile. Empty records nothing.
+    required: false
+    default: 'main'
+
+runs:
+  using: composite
+  steps:
+    - name: Prepend the entry and push
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        REPO: ${{ github.repository }}
+        ISSUE_NUMBER: ${{ inputs.issue-number }}
+        COMMIT_SHA: ${{ inputs.commit-sha }}
+        CHANGELOG_PATH: ${{ inputs.changelog-path }}
+        MAX_ENTRIES: ${{ inputs.max-entries }}
+        HEAD_BRANCH: ${{ inputs.head-branch }}
+        GIT_IDENTITY: ${{ inputs.git-identity }}
+        STAGE: ${{ inputs.stage }}
+        CHANGELOG_STAGES: ${{ inputs.changelog-stages }}
+      run: bash "${GITHUB_ACTION_PATH}/update-changelog.sh"

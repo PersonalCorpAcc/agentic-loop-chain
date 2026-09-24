@@ -1,0 +1,52 @@
+# Managed by @plainconceptsplatform/workflows@0.5.1. Source: loops/actions/apply-agent-bundle/action.yml. Profile digest: 08448fbaf1f8. Update with workflows update --force; consumer edits may be overwritten.
+name: Apply agent bundle
+description: Fast-forward an intended branch to the single commit exported by a verified git bundle.
+inputs:
+  bundle-file:
+    description: Path to the git bundle from the agent artifact.
+    required: true
+  target-branch:
+    description: Branch that must fast-forward to the bundle commit.
+    required: true
+  base-branch:
+    description: Existing branch used only when target-branch does not exist.
+    required: false
+    default: ''
+  token:
+    description: >-
+      Token the fetch and push are made with. Supplied per command rather than written into
+      a global git configuration or a remote URL, so it belongs to these commands and not to
+      everything else the job runs (FR-067).
+    required: true
+  denied-branches:
+    description: Branches this loop may open a pull request against but never push. Passed to the guard (FR-063).
+    required: false
+    default: 'dev,test,main'
+  release-pattern:
+    description: Extended regular expression matching release branches, empty when the strategy cuts none.
+    required: false
+  branch-pattern:
+    description: Extended regular expression every branch this loop writes matches.
+    required: false
+    default: '^agent/[0-9]+-[0-9]+/.+$'
+runs:
+  using: composite
+  steps:
+    # This action is the last thing between an agent's output and a push, so the deny-list
+    # is checked here as well as by the caller: a second caller added later inherits the
+    # refusal rather than having to remember it (FR-063).
+    - name: Check the branch may be written
+      uses: ./.github/actions/guard-branch-write
+      with:
+        branch: ${{ inputs.target-branch }}
+        denied-branches: ${{ inputs.denied-branches }}
+        release-pattern: ${{ inputs.release-pattern }}
+        branch-pattern: ${{ inputs.branch-pattern }}
+    - name: Fast-forward branch from bundle
+      shell: bash
+      env:
+        BUNDLE_FILE: ${{ inputs.bundle-file }}
+        TARGET_BRANCH: ${{ inputs.target-branch }}
+        BASE_BRANCH: ${{ inputs.base-branch }}
+        GIT_TOKEN: ${{ inputs.token }}
+      run: bash "$GITHUB_ACTION_PATH/apply-bundle.sh" "$BUNDLE_FILE" "$TARGET_BRANCH" "$BASE_BRANCH"

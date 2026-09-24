@@ -1,0 +1,120 @@
+# Managed by @plainconceptsplatform/workflows@0.5.1. Source: loops/actions/classify-route/action.yml. Profile digest: 08448fbaf1f8. Update with workflows update --force; consumer edits may be overwritten.
+name: Classify route
+description: Classify the triggering event into exactly one route, and resolve the issue a gated pull request closes.
+inputs:
+  token:
+    description: GitHub token with pull-requests read access.
+    required: true
+outputs:
+  route:
+    description: The single route this event selects, or `none`.
+    value: ${{ steps.classify.outputs.route }}
+  issue-number:
+    description: Issue number the route operates on.
+    value: ${{ steps.classify.outputs.issue-number }}
+  pr-number:
+    description: Pull request number the route operates on.
+    value: ${{ steps.classify.outputs.pr-number }}
+  linked-issue:
+    description: Issue the pull request closes. Empty for routes that do not target one.
+    value: ${{ steps.linked-issue.outputs.issue }}
+  ci-conclusion:
+    description: Conclusion reported by the CI run that triggered a merge-gate route.
+    value: ${{ steps.classify.outputs.ci-conclusion }}
+  ci-run-id:
+    description: Workflow run ID of that CI run.
+    value: ${{ steps.classify.outputs.ci-run-id }}
+  merge-gate-attempts:
+    description: Failed merge-gate attempts already made against this CI verdict.
+    value: ${{ steps.classify.outputs.merge-gate-attempts }}
+  implement-attempts:
+    description: Implement runs already made for this issue that died before producing an answer.
+    value: ${{ steps.classify.outputs.implement-attempts }}
+  refine-mode:
+    description: first or rerefine.
+    value: ${{ steps.classify.outputs.refine-mode }}
+  triage-mode:
+    description: first or retriage.
+    value: ${{ steps.classify.outputs.triage-mode }}
+  trigger-kind:
+    description: scheduled or manual.
+    value: ${{ steps.classify.outputs.trigger-kind }}
+  pr-merged:
+    description: true when the pull request that closed was merged, for the stage-merge route.
+    value: ${{ steps.classify.outputs.pr-merged }}
+  pr-base:
+    description: The stage a closing pull request targeted. Only the event carries it, so it is read here.
+    value: ${{ steps.classify.outputs.pr-base }}
+  closes-issue:
+    description: >-
+      true when this merge ends the change's life, which is a merge into the stage the
+      profile names. Decided in the classifier so the router acts on an answer rather than
+      repeating the comparison.
+    value: ${{ steps.classify.outputs.closes-issue }}
+runs:
+  using: composite
+  steps:
+    - name: Classify the event
+      id: classify
+      shell: bash
+      env:
+        EVENT: ${{ github.event_name }}
+        ACTION: ${{ github.event.action }}
+        LABEL: ${{ github.event.label.name }}
+        ISSUE_LABELS: ${{ toJSON(github.event.issue.labels.*.name) }}
+        ISSUE_STATE: ${{ github.event.issue.state }}
+        EVENT_ISSUE_NUMBER: ${{ github.event.issue.number }}
+        EVENT_PR_NUMBER: ${{ github.event.pull_request.number }}
+        COMMENT_ON_PR: ${{ github.event.issue.pull_request != '' }}
+        COMMENT_SENDER_TYPE: ${{ github.event.comment.user.type }}
+        ACTOR: ${{ github.actor }}
+        RUN_PR_NUMBER: ${{ github.event.workflow_run.pull_requests[0].number }}
+        RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+        RUN_ID: ${{ github.event.workflow_run.id }}
+        SCHEDULE: ${{ github.event.schedule }}
+        OPERATION: ${{ github.event.inputs.operation }}
+        INPUT_ISSUE_NUMBER: ${{ github.event.inputs.issue-number }}
+        INPUT_PR_NUMBER: ${{ github.event.inputs.pr-number }}
+        INPUT_MODE: ${{ github.event.inputs.mode }}
+        INPUT_CI_CONCLUSION: ${{ github.event.inputs.ci-conclusion }}
+        INPUT_CI_RUN_ID: ${{ github.event.inputs.ci-run-id }}
+        INPUT_ATTEMPTS_SO_FAR: ${{ github.event.inputs.attempts_so_far }}
+        INPUT_TRIGGER_KIND: ${{ github.event.inputs.trigger-kind }}
+        # A closing pull request is a stage transition or nothing, and these two say which
+        # (FR-051). The allowlist is explicit on purpose: the classifier is a pure function
+        # of what is listed here, which is what lets the route matrix exercise it.
+        PR_MERGED: ${{ github.event.pull_request.merged }}
+        PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+      run: |
+        set -euo pipefail
+
+        bash "${GITHUB_ACTION_PATH}/classify-route.sh" | tee "$RUNNER_TEMP/route.env"
+        cat "$RUNNER_TEMP/route.env" >> "$GITHUB_OUTPUT"
+
+        route="$(sed -n 's/^route=//p' "$RUNNER_TEMP/route.env")"
+        reason="$(sed -n 's/^error=//p' "$RUNNER_TEMP/route.env")"
+
+        if [ "$route" = "none" ] && [ -n "$reason" ]; then
+          echo "::notice::No route for this event: $reason"
+        fi
+
+    - name: Resolve the issue the pull request closes
+      id: linked-issue
+      if: steps.classify.outputs.route == 'merge-gate' || steps.classify.outputs.route == 'apply-review' || steps.classify.outputs.route == 'stage-merge'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        REPO: ${{ github.repository }}
+        PR_NUMBER: ${{ steps.classify.outputs.pr-number }}
+      run: |
+        set -euo pipefail
+        # Resolved once, here, and passed down: every job that needs it reads
+        # `needs.classify.outputs.linked-issue` rather than asking again, so there is one
+        # answer per run instead of eight (FR-030).
+        # shellcheck source=../resolve-pr-issue/resolve-pr-issue.sh
+        . "${GITHUB_ACTION_PATH}/../resolve-pr-issue/resolve-pr-issue.sh"
+
+        issue="$(pr_issue "$PR_NUMBER")"
+
+        echo "issue=${issue}" >> "$GITHUB_OUTPUT"
+        echo "Pull request #${PR_NUMBER} belongs to issue #${issue:-<none>}"

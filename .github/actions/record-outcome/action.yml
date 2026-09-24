@@ -1,0 +1,36 @@
+# Managed by @plainconceptsplatform/workflows@0.5.1. Source: loops/actions/record-outcome/action.yml. Profile digest: 08448fbaf1f8. Update with workflows update --force; consumer edits may be overwritten.
+name: Record outcome
+description: >
+  Append the run's one machine-readable outcome line to the step summary, and annotate a
+  no-action or handed-to-human run so the answer is on the run's own page (FR-058).
+inputs:
+  outcome:
+    description: One of acted, no-action, handed-to-human, failed.
+    required: true
+  reason:
+    description: A code from the closed enumeration in record-outcome.sh. Anything else fails the step.
+    required: true
+  route:
+    description: The route this job belongs to, or - for a job that is not a route.
+    required: false
+    default: '-'
+  subject:
+    description: The issue as #N, a branch name, or - when the job acts on neither.
+    required: false
+    default: '-'
+  detail:
+    description: One human sentence. The line answers a collector; this answers a person.
+    required: false
+    default: ''
+runs:
+  using: composite
+  steps:
+    - name: Write the outcome line
+      shell: bash
+      env:
+        OUTCOME: ${{ inputs.outcome }}
+        REASON: ${{ inputs.reason }}
+        ROUTE: ${{ inputs.route }}
+        SUBJECT: ${{ inputs.subject }}
+        DETAIL: ${{ inputs.detail }}
+      run: bash "${GITHUB_ACTION_PATH}/record-outcome.sh"

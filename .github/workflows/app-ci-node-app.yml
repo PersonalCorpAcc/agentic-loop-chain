@@ -1,0 +1,125 @@
+# Managed by @plainconceptsplatform/workflows@0.5.1. Source: loops/templates/ci/app-ci-node-app.yml. Profile digest: 08448fbaf1f8. Update with `workflows update --force`; consumer edits may be overwritten.
+name: "CI"
+
+# A single Node application: install, lint, build, test. The other node template
+# (`app-ci-node-monorepo`) is a Next.js workspace with Biome, Stryker and Playwright wired in,
+# which is a fine shape and not the only one -- an adopter with one package and a test script
+# should not have to adopt four tools to get a green check (FR-014).
+#
+# Every command is the profile's. Nothing here knows what the application is, which framework
+# it uses, or whether it has a web build at all: a command the profile does not supply is a
+# step that says so and skips.
+
+on:
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+env:
+  NODE_VERSION: "22"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    name: Build and test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "${{ env.NODE_VERSION }}"
+          cache: pnpm
+      - name: Install dependencies
+        env:
+          COMMAND: "pnpm install --frozen-lockfile"
+        run: |
+          set -euo pipefail
+          [ -n "$COMMAND" ] || { echo "No install command in the profile; skipping."; exit 0; }
+          eval "$COMMAND"
+      - name: Lint
+        env:
+          COMMAND: "pnpm run lint"
+        run: |
+          set -euo pipefail
+          [ -n "$COMMAND" ] || { echo "No lint command in the profile; skipping."; exit 0; }
+          eval "$COMMAND"
+      - name: Build
+        env:
+          COMMAND: "pnpm run build"
+        run: |
+          set -euo pipefail
+          [ -n "$COMMAND" ] || { echo "No build command in the profile; skipping."; exit 0; }
+          eval "$COMMAND"
+      - name: Test
+        env:
+          COMMAND: "pnpm run test"
+        run: |
+          set -euo pipefail
+          [ -n "$COMMAND" ] || { echo "No test command in the profile; skipping."; exit 0; }
+          eval "$COMMAND"
+
+  # Branch protection selects a required status check by check-run name, which is a job's name
+  # and not a workflow's. This job is that check: it depends on every job the verdict is made
+  # of and fails if any of them did (FR-068). The gate reads the same name, so the two cannot
+  # disagree about "CI passed".
+  ci:
+    name: "CI"
+    needs: [test]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Fail if any required job did
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          set -euo pipefail
+          for result in $RESULTS; do
+            case "$result" in
+              failure | cancelled | timed_out) echo "A required job ended $result."; exit 1 ;;
+            esac
+          done
+          echo "Every required job succeeded."
+
+  # A bot pull request is opened with GITHUB_TOKEN, and GitHub delivers no workflow_run event
+  # for the CI runs that follow. The router's CI-completion route never sees them, so this job
+  # hands the verdict over from inside CI. workflow_dispatch is one of the two events
+  # GITHUB_TOKEN may raise, so no App token is needed here.
+  dispatch-merge-gate:
+    name: Dispatch merge gate
+    needs: [test]
+    if: >
+      always() &&
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.user.type == 'Bot'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - name: Checkout workflow actions
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Dispatch the merge gate with this run's verdict
+        uses: ./.github/actions/dispatch-merge-gate
+        with:
+          results: ${{ join(needs.*.result, ' ') }}
+          pr-number: ${{ github.event.pull_request.number }}
+          run-id: ${{ github.run_id }}
+          ref: ${{ github.event.repository.default_branch }}
+          token: ${{ github.token }}

@@ -1,0 +1,86 @@
+# Managed by @plainconceptsplatform/workflows@0.5.1. Source: loops/actions/sync-stages/action.yml. Profile digest: 08448fbaf1f8. Update with workflows update --force; consumer edits may be overwritten.
+name: Sync stages
+description: >
+  Carry content that arrived on a later stage back down the chain, as a pull request per
+  pair (FR-079). Runs no model: which content an earlier stage is missing is a patch-id
+  comparison, and the carry itself is a cherry-pick.
+inputs:
+  token:
+    description: An App installation token. It writes a branch and opens a pull request, so the workflow token will not do.
+    required: true
+  repo:
+    description: Target repository in owner/name format.
+    required: false
+    default: ${{ github.repository }}
+  stages:
+    description: The chain, in order, comma separated. This route walks it downward, from the last entry to the first.
+    required: false
+    default: 'dev,test,main'
+  branch-strategy:
+    description: The branching strategy, because env-promotion's later stages are snapshots rather than histories of their own.
+    required: false
+    default: 'branch-chain'
+  release-pattern:
+    description: Extended regular expression matching release branches, so the guard refuses them as synchronisation heads.
+    required: false
+  auto-merge-mode:
+    description: >
+      The profile's `branching.autoMerge.mode`. A carry-down repairs drift the loop caused
+      and merges itself where the adopter permits unattended merging into that stage; `off`
+      means it waits for a person like anything else (FR-086).
+    required: false
+    default: "off"
+  auto-merge-targets:
+    description: Comma-separated stages the profile permits the loop to merge into unattended.
+    required: false
+    default: ""
+  history-limit:
+    description: How far back each stage is read. A bound rather than a policy; content older than this is caught by the empty cherry-pick instead.
+    required: false
+    default: '200'
+  title-prefix:
+    description: Prefix for the synchronisation pull request's title.
+    required: false
+    default: '[bot] '
+outputs:
+  opened:
+    description: How many synchronisation pull requests this run opened.
+    value: ${{ steps.sync.outputs.opened }}
+  reason:
+    description: Why nothing was opened, when nothing was, from the outcome enumeration.
+    value: ${{ steps.sync.outputs.reason }}
+runs:
+  using: composite
+  steps:
+    - name: Own the git identity for this job
+      shell: bash
+      env:
+        GIT_AUTHOR_NAME: 'personalcorpacc-agentic-loop[bot]'
+      run: |
+        set -euo pipefail
+        git config user.name "${GIT_AUTHOR_NAME}"
+        git config user.email "${GIT_AUTHOR_NAME}@users.noreply.github.com"
+    - name: Carry what the earlier stages are missing
+      id: sync
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        REPO: ${{ inputs.repo }}
+        STAGE_BRANCHES: ${{ inputs.stages }}
+        BRANCH_STRATEGY: ${{ inputs.branch-strategy }}
+        RELEASE_PATTERN: ${{ inputs.release-pattern }}
+        AUTO_MERGE_MODE: ${{ inputs.auto-merge-mode }}
+        AUTO_MERGE_TARGETS: ${{ inputs.auto-merge-targets }}
+        HISTORY_LIMIT: ${{ inputs.history-limit }}
+        TITLE_PREFIX: ${{ inputs.title-prefix }}
+        DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        # The credential belongs to the git commands this script runs and to nothing else
+        # (FR-067).
+        GIT_TOKEN: ${{ inputs.token }}
+      run: |
+        set -euo pipefail
+        GIT_CONFIG_COUNT=1
+        GIT_CONFIG_KEY_0=http.extraheader
+        GIT_CONFIG_VALUE_0="Authorization: Basic $(printf 'x-access-token:%s' "$GIT_TOKEN" | base64 | tr -d '\n')"
+        export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
+        bash "${GITHUB_ACTION_PATH}/sync-stages.sh"

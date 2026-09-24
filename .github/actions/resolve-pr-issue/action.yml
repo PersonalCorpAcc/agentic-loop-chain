@@ -1,0 +1,39 @@
+# Managed by @plainconceptsplatform/workflows@0.5.1. Source: loops/actions/resolve-pr-issue/action.yml. Profile digest: 08448fbaf1f8. Update with workflows update --force; consumer edits may be overwritten.
+name: Resolve the issue a pull request belongs to
+description: >
+  Read the App's issue marker from the pull request body, falling back to the forge's own
+  closing reference and then to a keyword in the body (FR-030). The rule lives in the shell
+  file beside this manifest, which the router's sweeps source directly; this manifest is for
+  callers that want one step and one output.
+inputs:
+  token:
+    description: A token that can read the pull request.
+    required: true
+  pr-number:
+    description: The pull request whose issue is wanted.
+    required: true
+  repo:
+    description: Target repository in owner/name format.
+    required: false
+    default: ${{ github.repository }}
+outputs:
+  issue:
+    description: The issue number, or empty when nothing links this pull request to one.
+    value: ${{ steps.resolve.outputs.issue }}
+runs:
+  using: composite
+  steps:
+    - name: Resolve the issue
+      id: resolve
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        REPO: ${{ inputs.repo }}
+        PR_NUMBER: ${{ inputs.pr-number }}
+      run: |
+        set -euo pipefail
+        # shellcheck source=./resolve-pr-issue.sh
+        . "${GITHUB_ACTION_PATH}/resolve-pr-issue.sh"
+        issue="$(pr_issue "$PR_NUMBER")"
+        echo "issue=${issue}" >> "$GITHUB_OUTPUT"
+        echo "Pull request #${PR_NUMBER} belongs to issue #${issue:-<none>}."

@@ -1,0 +1,91 @@
+# Managed by @plainconceptsplatform/workflows@0.5.1. Source: loops/actions/cleanup-artifacts/action.yml. Profile digest: 08448fbaf1f8. Update with workflows update --force; consumer edits may be overwritten.
+name: Clean up artifacts
+description: Delete workflow artifacts older than the configured retention period.
+inputs:
+  token:
+    description: GitHub token with actions write access.
+    required: true
+  artifact-retention-days:
+    description: Retention period in days. Invalid or empty values use 3.
+    required: false
+    default: ''
+runs:
+  using: composite
+  steps:
+    - name: Delete expired artifacts
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+      env:
+        ARTIFACT_RETENTION_DAYS: ${{ inputs.artifact-retention-days }}
+      with:
+        github-token: ${{ inputs.token }}
+        script: |
+          const parsedDays = Number.parseInt(process.env.ARTIFACT_RETENTION_DAYS, 10);
+          const days = Number.isInteger(parsedDays) && parsedDays > 0 ? parsedDays : 3;
+          const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+
+          core.info(`Retention: ${days} days (cutoff ${cutoff.toISOString()})`);
+
+          const artifacts = await github.paginate(github.rest.actions.listArtifactsForRepo, {
+            ...context.repo,
+            per_page: 100,
+          });
+
+          const expired = artifacts.filter((artifact) => new Date(artifact.created_at) < cutoff);
+
+          let deleted = 0;
+          const failed = [];
+
+          for (const artifact of expired) {
+            // GitHub answers a delete with a 5xx now and then. Three tries, because the
+            // alternative is a red daily run over one artifact that tomorrow's run would
+            // have removed anyway.
+            let lastError;
+            for (let attempt = 1; attempt <= 3; attempt += 1) {
+              try {
+                await github.rest.actions.deleteArtifact({
+                  ...context.repo,
+                  artifact_id: artifact.id,
+                });
+
+                core.info(`Deleted ${artifact.name} (created ${artifact.created_at})`);
+                deleted += 1;
+                lastError = undefined;
+                break;
+              } catch (error) {
+                lastError = error;
+                if (attempt < 3) await new Promise((wait) => setTimeout(wait, attempt * 2000));
+              }
+            }
+
+            if (lastError) {
+              core.warning(
+                `Could not delete ${artifact.name} (${artifact.id}) after 3 tries: ${lastError.message}`,
+              );
+              failed.push({ name: artifact.name, status: lastError.status });
+            }
+          }
+
+          await core.summary
+            .addHeading('Artifact cleanup', 2)
+            .addList([
+              `Retention: ${days} days (cutoff ${cutoff.toISOString()})`,
+              `Deleted: ${deleted}`,
+              `Failed to delete: ${failed.length}`,
+              `Within retention: ${artifacts.length - expired.length}`,
+            ])
+            .write();
+
+          // Deleting nothing at all while expired artifacts exist is a permission or
+          // configuration problem, and has to be loud. One stubborn artifact among many is
+          // the API having a bad minute: tomorrow's run picks it up, and failing here only
+          // teaches people to ignore a red cleanup. A 4xx is never transient, so it fails
+          // whatever else succeeded.
+          const names = failed.map((entry) => entry.name).join(', ');
+          const structural = failed.some((entry) => entry.status && entry.status < 500);
+          if (failed.length > 0 && (deleted === 0 || structural)) {
+            core.setFailed(`${failed.length} artifact(s) could not be deleted: ${names}`);
+          } else if (failed.length > 0) {
+            core.warning(
+              `${failed.length} artifact(s) survived this run and will be retried tomorrow: ${names}`,
+            );
+          }

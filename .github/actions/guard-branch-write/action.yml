@@ -1,0 +1,39 @@
+# Managed by @plainconceptsplatform/workflows@0.5.1. Source: loops/actions/guard-branch-write/action.yml. Profile digest: 08448fbaf1f8. Update with workflows update --force; consumer edits may be overwritten.
+name: Guard branch write
+description: >
+  Refuse to write a branch this loop does not name, or one it promotes into, cuts from,
+  releases, or the repository's own default (FR-063).
+inputs:
+  branch:
+    description: The branch a deterministic job is about to write. Untrusted by definition, whatever supplied it.
+    required: true
+  denied-branches:
+    description: Branches this loop may open a pull request against but never push. The stages and the branch point.
+    required: false
+    default: 'dev,test,main'
+  release-pattern:
+    description: Extended regular expression matching release branches, empty when the strategy cuts none.
+    required: false
+  branch-pattern:
+    description: Extended regular expression every branch this loop writes matches, derived from the naming template.
+    required: false
+    default: '^agent/[0-9]+-[0-9]+/.+$'
+  default-branch:
+    description: The repository's default branch, which no deterministic job pushes.
+    required: false
+    default: ${{ github.event.repository.default_branch }}
+runs:
+  using: composite
+  steps:
+    - name: Check the branch against the deny-list and the template
+      shell: bash
+      env:
+        # Through the environment, never interpolated into the command line: a value
+        # `${{ }}` substitutes is substituted before bash sees it, and this action exists
+        # because the branch name is not trusted.
+        BRANCH: ${{ inputs.branch }}
+        DENIED_BRANCHES: ${{ inputs.denied-branches }}
+        RELEASE_PATTERN: ${{ inputs.release-pattern }}
+        BRANCH_PATTERN: ${{ inputs.branch-pattern }}
+        DEFAULT_BRANCH: ${{ inputs.default-branch }}
+      run: bash "${GITHUB_ACTION_PATH}/guard-branch-write.sh"

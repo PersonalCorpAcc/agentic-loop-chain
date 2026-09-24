@@ -1,0 +1,44 @@
+# Managed by @plainconceptsplatform/workflows@0.5.1. Source: loops/actions/check-merge-preconditions/action.yml. Profile digest: 08448fbaf1f8. Update with workflows update --force; consumer edits may be overwritten.
+name: Check merge preconditions
+description: >
+  Read the forge's merge state and rebaseability before anything merges, so a pull request
+  the forge will refuse becomes a review with a sentence rather than a red attempt (FR-068).
+inputs:
+  token:
+    description: A token that can read the pull request.
+    required: true
+  pr-number:
+    description: The pull request about to be merged.
+    required: true
+  repo:
+    description: Target repository in owner/name format.
+    required: false
+    default: ${{ github.repository }}
+  merge-method:
+    description: How the forge merges here, from the profile. Rebaseability is a precondition only under rebase.
+    required: false
+    default: 'rebase'
+outputs:
+  mergeable:
+    description: true when the forge will take the merge as it stands.
+    value: ${{ steps.preconditions.outputs.mergeable }}
+  deferrable:
+    description: >
+      true when a repository rule is holding the pull request and may still be satisfied, so
+      the caller arms auto-merge rather than handing it to a person (FR-080).
+    value: ${{ steps.preconditions.outputs.deferrable }}
+  refusal:
+    description: One sentence, suitable for a comment, saying why the forge will not take it. Empty when it will.
+    value: ${{ steps.preconditions.outputs.refusal }}
+runs:
+  using: composite
+  steps:
+    - name: Read the forge's merge state
+      id: preconditions
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        REPO: ${{ inputs.repo }}
+        PR_NUMBER: ${{ inputs.pr-number }}
+        MERGE_METHOD: ${{ inputs.merge-method }}
+      run: bash "${GITHUB_ACTION_PATH}/check-merge-preconditions.sh"

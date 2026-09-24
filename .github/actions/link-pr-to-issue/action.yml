@@ -1,0 +1,60 @@
+# Managed by @plainconceptsplatform/workflows@0.5.1. Source: loops/actions/link-pr-to-issue/action.yml. Profile digest: 08448fbaf1f8. Update with workflows update --force; consumer edits may be overwritten.
+name: Link pull request to issue
+description: >
+  Stamp the deterministic issue marker on the pull request body, and neutralise any closing
+  keyword the body carries, so the forge closes the issue at the stage the profile names
+  rather than at the first merge (FR-030).
+inputs:
+  token:
+    description: GitHub token with pull-requests write access.
+    required: true
+  pr-number:
+    description: Pull request number.
+    required: true
+  issue-number:
+    description: Issue number the pull request should close.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Stamp the issue marker and neutralise closing keywords
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        REPO: ${{ github.repository }}
+        PR_NUMBER: ${{ inputs.pr-number }}
+        ISSUE_NUMBER: ${{ inputs.issue-number }}
+      run: |
+        set -euo pipefail
+
+        # No early exit on an existing closing reference. That reference is the thing being
+        # removed: the forge closes an issue at the first merge into the default branch, and
+        # under a chain the first merge is the first stage of three. The issue closes when
+        # the stage-merge route says so, at `closeIssueOn` (FR-030).
+        pr="$(gh pr view "$PR_NUMBER" --repo "$REPO" --json body)"
+        body="$(jq -r '.body // ""' <<<"$pr")"
+
+        # `Closes #12` becomes `Refs #12`: the link stays readable to a person, and stops
+        # being an instruction to the forge. Every spelling the forge honours, in any case.
+        neutralised="$(printf '%s' "$body" |
+          sed -E 's/\b([Cc]lose[sd]?|CLOSE[SD]?|[Ff]ixe?[sd]?|FIXE?[SD]?|[Rr]esolve[sd]?|RESOLVE[SD]?)(:?[[:space:]]+)(#[0-9]+|https:\/\/[^[:space:]]+\/issues\/[0-9]+)/Refs\2\3/g')"
+
+        marker="<!-- implement-issue: ${ISSUE_NUMBER} -->"
+        if printf '%s' "$neutralised" | grep -qF -- "$marker"; then
+          printf '%s\n' "$neutralised" > /tmp/pr-body.md
+        else
+          printf '%s\n\n%s\n' "$neutralised" "$marker" > /tmp/pr-body.md
+        fi
+
+        # The agent is never asked to write the marker: gh-aw strips HTML comments from every
+        # safe-output body before the pull request exists, so a marker it wrote would arrive
+        # deleted. This step runs with the App token, after the fact, and is fatal (FR-030).
+        gh pr edit "$PR_NUMBER" --repo "$REPO" --body-file /tmp/pr-body.md
+
+        remaining="$(gh pr view "$PR_NUMBER" --repo "$REPO" --json closingIssuesReferences --jq '[.closingIssuesReferences[].number] | join(", ")')"
+        if [ -n "$remaining" ]; then
+          echo "::error::PR #${PR_NUMBER} still closes issue(s) ${remaining} after neutralisation. The forge would close them at the first merge, which is not where this repository closes an issue."
+          exit 1
+        fi
+
+        echo "PR #$PR_NUMBER carries ${marker} and closes nothing by keyword."

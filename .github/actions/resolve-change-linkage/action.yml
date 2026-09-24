@@ -1,0 +1,38 @@
+# Managed by @plainconceptsplatform/workflows@0.5.1. Source: loops/actions/resolve-change-linkage/action.yml. Profile digest: 08448fbaf1f8. Update with workflows update --force; consumer edits may be overwritten.
+name: Resolve change linkage
+description: >
+  Read the pull request and branch of a change from the App-authored comment that records
+  them, falling back to the issue body only as an uncorroborated hint (FR-064).
+inputs:
+  token:
+    description: Any token that can read issue comments.
+    required: true
+  issue-number:
+    description: Issue whose change is being resolved.
+    required: true
+  bot-login:
+    description: The login the App comments as. A comment by any other author is not this loop's linkage, whatever it says.
+    required: false
+    default: 'personalcorpacc-agentic-loop[bot]'
+outputs:
+  pr:
+    description: The pull request number, empty when nothing recorded one.
+    value: ${{ steps.resolve.outputs.pr }}
+  branch:
+    description: The branch name, empty when nothing recorded one.
+    value: ${{ steps.resolve.outputs.branch }}
+  source:
+    description: comment when the App wrote it, body when only an unverifiable body marker was found, none when neither.
+    value: ${{ steps.resolve.outputs.source }}
+runs:
+  using: composite
+  steps:
+    - name: Resolve the change's pull request and branch
+      id: resolve
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        REPO: ${{ github.repository }}
+        ISSUE_NUMBER: ${{ inputs.issue-number }}
+        BOT_LOGIN: ${{ inputs.bot-login }}
+      run: bash "${GITHUB_ACTION_PATH}/resolve-change-linkage.sh"

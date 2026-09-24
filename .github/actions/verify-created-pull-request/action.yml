@@ -1,0 +1,42 @@
+# Managed by @plainconceptsplatform/workflows@0.5.1. Source: loops/actions/verify-created-pull-request/action.yml. Profile digest: 08448fbaf1f8. Update with workflows update --force; consumer edits may be overwritten.
+name: Verify created pull request
+description: >
+  Check the pull request the framework created against what the profile asked for, and fail
+  red rather than leaving a green run behind a wrong one (FR-061).
+inputs:
+  token:
+    description: App installation token, so the read sees the same repository the writes do.
+    required: true
+  pr-number:
+    description: The pull request the run reported creating.
+    required: true
+  branch-point-tip:
+    description: >-
+      The branch point's tip, read before the agent ran. The head must contain it: a head that
+      does not was cut somewhere this loop does not cut branches.
+    required: false
+    default: ''
+  base-tip:
+    description: >-
+      The base branch's tip, read before the agent ran. Empty under a strategy whose base is
+      the branch point, where a head descending from the base is the ordinary shape and
+      there is nothing to detect.
+    required: false
+    default: ''
+  branch-pattern:
+    description: Extended regular expression every branch this loop writes matches.
+    required: false
+    default: '^agent/[0-9]+-[0-9]+/.+$'
+runs:
+  using: composite
+  steps:
+    - name: Check the pull request against the profile
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        REPO: ${{ github.repository }}
+        PR_NUMBER: ${{ inputs.pr-number }}
+        BASE_TIP: ${{ inputs.base-tip }}
+        BRANCH_POINT_TIP: ${{ inputs.branch-point-tip }}
+        BRANCH_PATTERN: ${{ inputs.branch-pattern }}
+      run: bash "${GITHUB_ACTION_PATH}/verify-created-pull-request.sh"

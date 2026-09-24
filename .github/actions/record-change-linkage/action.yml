@@ -1,0 +1,30 @@
+# Managed by @plainconceptsplatform/workflows@0.5.1. Source: loops/actions/record-change-linkage/action.yml. Profile digest: 08448fbaf1f8. Update with workflows update --force; consumer edits may be overwritten.
+name: Record change linkage
+description: >
+  Post, or update, the App-authored issue comment that is the authoritative link between an
+  issue and its change: its pull request, its branch, and later its promotions (FR-064).
+inputs:
+  token:
+    description: An App installation token. The App identity is what makes the comment authoritative, so a workflow token will not do.
+    required: true
+  issue-number:
+    description: Issue the comment belongs to.
+    required: true
+  marker-key:
+    description: The marker name that identifies this comment, without the angle brackets, for example implement-pr. An existing App comment carrying it is updated rather than duplicated.
+    required: true
+  body:
+    description: The comment body, markers included. Written verbatim.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Post or update the linkage comment
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        REPO: ${{ github.repository }}
+        ISSUE_NUMBER: ${{ inputs.issue-number }}
+        MARKER_KEY: ${{ inputs.marker-key }}
+        COMMENT_BODY: ${{ inputs.body }}
+      run: bash "${GITHUB_ACTION_PATH}/record-change-linkage.sh"
