@@ -6,6 +6,7 @@
   "packageManager": "pnpm@10.30.3",
   "scripts": {
     "build": "node --check src/duration.mjs",
+    "lint": "node --check src/duration.mjs && node --check test/duration.test.mjs",
     "test": "node --test test/*.test.mjs"
   }
 }
