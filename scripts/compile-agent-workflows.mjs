@@ -1,4 +1,4 @@
-// Managed by @plainconceptsplatform/workflows@0.5.1. Source: loops/scripts/compile-agent-workflows.mjs. Profile digest: fdaf7c626ab9. Update with `workflows update --force`; consumer edits may be overwritten.
+// Managed by @software-factory-dev/cli@0.5.1. Source: loops/scripts/compile-agent-workflows.mjs. Profile digest: fdaf7c626ab9. Update with `workflows update --force`; consumer edits may be overwritten.
 
 const OPENCODE_VERSION = '1.18.23'
 import { spawnSync } from "node:child_process";

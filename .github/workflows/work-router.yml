@@ -1,4 +1,4 @@
-# Managed by @plainconceptsplatform/workflows@0.5.1. Source: loops/workflows/work-router.yml. Profile digest: fdaf7c626ab9. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/workflows/work-router.yml. Profile digest: fdaf7c626ab9. Update with `workflows update --force`; consumer edits may be overwritten.
 name: "All Work Router"
 
 # Owns every repository automation trigger. Classifies each event into exactly one route,
@@ -303,7 +303,7 @@ jobs:
               ;;
           esac
 
-          # Platform bot owns Safe Outputs. Its label changes must be able to
+          # The bot App owns Safe Outputs. Its label changes must be able to
           # start the follow-on worker, even though GitHub does not report it
           # as a repository collaborator.
           if [ "$ACTOR" = "github-actions[bot]" ] || [ "$ACTOR" = "personalcorpacc-agentic-loop[bot]" ]; then
