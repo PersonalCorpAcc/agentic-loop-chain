@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/verify-created-pull-request/verify-created-pull-request.sh. Profile digest: fdaf7c626ab9. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/verify-created-pull-request/verify-created-pull-request.sh. Profile digest: dee2c3b90207. Update with `workflows update --force`; consumer edits may be overwritten.
 #
 # The pull request the framework says it made, checked against what it should be (FR-061).
 #

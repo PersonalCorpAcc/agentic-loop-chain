@@ -1,9 +1,13 @@
 ---
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/workflows/agent-merge-gate.md. Profile digest: fdaf7c626ab9. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/workflows/agent-merge-gate.md. Profile digest: dee2c3b90207. Update with `workflows update --force`; consumer edits may be overwritten.
 env:
   VERIFY_COMMANDS: "pnpm install --frozen-lockfile && pnpm run build && pnpm run test"
   REPO_RULES: "Install with the lockfile frozen; an install that resolves a different tree is not reproducing the change under review. Run scripts through pnpm rather than npx, or a second package manager's lockfile appears in the diff."
   PROTECTED_FILES: (^\.|^opencode\.jsonc$|^package\.json$|^pnpm-lock\.yaml$|^pnpm-workspace\.yaml$|^AGENTS\.md$|^ARCHITECTURE\.md$)
+  # What a test file is and what disables one, composed from the stack packs. Empty turns the
+  # test-integrity check off; the installer fills both from the declared packs (007 X06).
+  TEST_FILES: "([.](test|spec)[.][cm]?[jt]sx?$|(^|/)__tests__/)"
+  TEST_SKIP_MARKERS: "((^|[^A-Za-z0-9_.])(it|test|describe)[.](skip|only|todo)[(]|(^|[^A-Za-z0-9_.])(xit|xtest|xdescribe)[(])"
   VERIFY_COMMANDS_SCOPED: "pnpm run lint"
   LINT_FIX_COMMAND: "pnpm run lint --fix"
   REPO_VERIFY_COMMAND: repo-verify
@@ -311,13 +315,20 @@ jobs:
     if: needs.subject.outputs.found == 'true'
     runs-on: ubuntu-24.04
     permissions:
+      # An exhaustive block leaves `contents` at none, and the checkout below needs it on a
+      # private repository.
+      contents: read
       pull-requests: read
     outputs:
       requires_review: ${{ steps.files.outputs.requires_review }}
       files: ${{ steps.files.outputs.files }}
     steps:
+      - name: Checkout workflow actions
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Require review for protected pull request files
-        id: files
+        id: protected
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -342,21 +353,48 @@ jobs:
           #
           # The three-dot compare is computed when it is asked for, so it cannot go stale.
           head_sha=$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq '.headRefOid')
-          files=$(gh api "repos/$REPO/compare/${BASE}...${head_sha}" --jq '.files[]?.filename' || true)
+          # Kept whole for the test-integrity check, which reads each file's status and patch.
+          compare_file="$RUNNER_TEMP/compare.json"
+          gh api "repos/$REPO/compare/${BASE}...${head_sha}" > "$compare_file" || true
+          files=$(jq -r '.files[]?.filename' "$compare_file" 2>/dev/null || true)
           # The compare endpoint stops at 300 files and says so by giving exactly that many.
           # Past it the pull request's own list is the only one available, stale or not, and a
           # change that large is one a person should see anyway.
           if [ "$(printf '%s\n' "$files" | grep -c .)" -ge 300 ]; then
             echo "::warning::PR #${PR} changes 300 files or more, which is the compare limit; falling back to the pull request's own file list."
-            files=$(gh api --paginate "repos/$REPO/pulls/$PR/files?per_page=100" --jq '.[].filename')
+            gh api --paginate "repos/$REPO/pulls/$PR/files?per_page=100" | jq -s 'add' > "$compare_file"
+            files=$(jq -r '.[].filename' "$compare_file")
           fi
+          echo "compare_file=$compare_file" >> "$GITHUB_OUTPUT"
           protected=$(printf '%s\n' "$files" | grep -E "$PROTECTED_FILES" || true)
-
-          if [ -n "$protected" ]; then
+          {
+            echo 'files<<EOF'
+            printf '%s\n' "$protected"
+            echo EOF
+          } >> "$GITHUB_OUTPUT"
+      # A change that deletes a test, renames one away or adds a skip marker hands the pull
+      # request to a person, as a protected file does: the agent must not be able to make a
+      # failing test disappear (007 X06). Decided here, deterministically, not by the model.
+      - name: Check test integrity
+        id: integrity
+        uses: ./.github/actions/check-test-integrity
+        with:
+          compare-file: ${{ steps.protected.outputs.compare_file }}
+          test-files: ${{ env.TEST_FILES }}
+          skip-markers: ${{ env.TEST_SKIP_MARKERS }}
+      - name: Decide whether a person must review
+        id: files
+        env:
+          PROTECTED: ${{ steps.protected.outputs.files }}
+          FINDINGS: ${{ steps.integrity.outputs.findings }}
+        run: |
+          set -euo pipefail
+          listed=$(printf '%s\n%s\n' "$PROTECTED" "$FINDINGS" | grep -v '^$' || true)
+          if [ -n "$listed" ]; then
             echo "requires_review=true" >> "$GITHUB_OUTPUT"
             {
               echo 'files<<EOF'
-              printf '%s\n' "$protected"
+              printf '%s\n' "$listed"
               echo EOF
             } >> "$GITHUB_OUTPUT"
           else
@@ -512,7 +550,7 @@ jobs:
             Problems found in PR #${{ needs.subject.outputs.pr }}. ${{ steps.conflicts.outputs.has_conflicts == 'true' && 'Merge conflicts detected.' || 'CI failed.' }}
             Bot is working on fixing it.
   validate_output:
-    needs: [activation, subject, agent, safe_outputs]
+    needs: [activation, subject, reserve, agent, safe_outputs]
     if: >
       always() &&
       needs.agent.result == 'success' &&
@@ -543,6 +581,9 @@ jobs:
           # received one it would report the gate reached no verdict (FR-056).
           issue-number: ${{ needs.subject.outputs.comment_target }}
           ci-conclusion: ${{ needs.subject.outputs.conclusion }}
+          # Step 4b pushes a merge of the base on green CI and says `remediated`; the validator
+          # accepts that only when the gate saw a conflict (review WF-04).
+          has-conflicts: ${{ needs.reserve.outputs.has_conflicts || 'false' }}
   conclude:
     needs: [activation, subject, protected_changes, agent, safe_outputs, validate_output]
     if: >
