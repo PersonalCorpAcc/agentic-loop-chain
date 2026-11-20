@@ -1,4 +1,4 @@
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/workflows/work-router.yml. Profile digest: fdaf7c626ab9. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/workflows/work-router.yml. Profile digest: dee2c3b90207. Update with `workflows update --force`; consumer edits may be overwritten.
 name: "All Work Router"
 
 # Owns every repository automation trigger. Classifies each event into exactly one route,
@@ -386,6 +386,7 @@ jobs:
       pr-merged: ${{ steps.route.outputs.pr-merged }}
       pr-base: ${{ steps.route.outputs.pr-base }}
       closes-issue: ${{ steps.route.outputs.closes-issue }}
+      implement-lane: ${{ steps.lane.outputs.lane }}
     steps:
       - name: Checkout workflow actions
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -396,6 +397,16 @@ jobs:
         uses: ./.github/actions/classify-route
         with:
           token: ${{ github.token }}
+      # Which implement lane this issue queues in: `branching.concurrentImplements` lanes, the
+      # issue number modulo their count. A concurrency group cannot say "at most N", but N
+      # groups can, and the same issue always lands in the same lane.
+      - name: Choose the implement lane
+        id: lane
+        if: steps.route.outputs.route == 'implement'
+        env:
+          ISSUE: ${{ steps.route.outputs.issue-number }}
+          LANES: "4"
+        run: echo "lane=$(( ${ISSUE:-0} % LANES ))" >> "$GITHUB_OUTPUT"
       # The route is annotated on every run, including the many that choose none: an event
       # that went nowhere and an event nothing was listening for look identical otherwise.
       - name: Record the outcome
@@ -560,8 +571,9 @@ jobs:
       # global group would implement one of six labelled issues and drop five -- hence the
       # queue. Keyed per issue that default is exactly right: two events for one issue collapse
       # into one pending run instead of producing two agents and two pull requests.
-      group: implement-${{ needs.classify.outputs.issue-number }}
+      group: implement-lane-${{ needs.classify.outputs.implement-lane }}
       cancel-in-progress: false
+      queue: max
     permissions: write-all
     with:
       issue-number: ${{ needs.classify.outputs.issue-number }}
@@ -743,6 +755,10 @@ jobs:
     concurrency:
       group: merge-belt-${{ needs.resolve-merge-base.outputs.base }}
       cancel-in-progress: false
+      # A group keeps one pending run and a newer pending run replaces it, so of three gates
+      # waiting on one belt two were cancelled and left for the hourly reconcile. `max` keeps up
+      # to 100 waiting in order (review WF-11; GitHub's concurrency `queue` property).
+      queue: max
     permissions: write-all
     with:
       pr-number: ${{ needs.classify.outputs.pr-number }}
@@ -1388,8 +1404,8 @@ jobs:
 
             # A terminal verdict newer than this CI run means a gate already decided;
             # failed attempts (the attempt marker) deliberately do not count.
-            verdict=$(gh api "repos/$REPO/issues/$pr/comments?per_page=100" \
-              --jq '[.[] | select((.body | contains("<!-- agent-merge-gate -->")) and (.body | contains("**Verdict:**"))) | .created_at] | max // empty')
+            verdict=$(gh api "repos/$REPO/issues/$pr/comments?per_page=100" --paginate \
+              --jq '.[] | select((.body | contains("<!-- agent-merge-gate -->")) and (.body | contains("**Verdict:**"))) | .created_at' | sort | tail -n 1)
             # Every issue this pull request carries, not the first of them. A promotion under
             # `env-promotion` carries the set that merged into the stage below, so a budget
             # counted against one of them is a fraction of the budget the gate is meant to have,
@@ -1397,8 +1413,8 @@ jobs:
             carried_issues="$(pr_issues "$pr")"
             while IFS= read -r linked_issue; do
               [ -n "$linked_issue" ] || continue
-              issue_verdict=$(gh api "repos/$REPO/issues/$linked_issue/comments?per_page=100" \
-                --jq '[.[] | select((.body | contains("<!-- agent-merge-gate -->")) and (.body | contains("**Verdict:**"))) | .created_at] | max // empty')
+              issue_verdict=$(gh api "repos/$REPO/issues/$linked_issue/comments?per_page=100" --paginate \
+                --jq '.[] | select((.body | contains("<!-- agent-merge-gate -->")) and (.body | contains("**Verdict:**"))) | .created_at' | sort | tail -n 1)
               if [ -n "$issue_verdict" ] && { [ -z "$verdict" ] || [ "$issue_verdict" \> "$verdict" ]; }; then
                 verdict="$issue_verdict"
               fi
@@ -1408,12 +1424,12 @@ jobs:
               return 0
             fi
 
-            attempts=$(gh api "repos/$REPO/issues/$pr/comments?per_page=100" \
-              --jq '[.[] | select(.body | contains("<!-- agent-merge-gate-attempt -->")) | select(.created_at > "'"$ci_finished"'") ] | length')
+            attempts=$(gh api "repos/$REPO/issues/$pr/comments?per_page=100" --paginate \
+              --jq '.[] | select(.body | contains("<!-- agent-merge-gate-attempt -->")) | select(.created_at > "'"$ci_finished"'") | .id' | grep -c . || true)
             while IFS= read -r linked_issue; do
               [ -n "$linked_issue" ] || continue
-              issue_attempts=$(gh api "repos/$REPO/issues/$linked_issue/comments?per_page=100" \
-                --jq '[.[] | select(.body | contains("<!-- agent-merge-gate-attempt -->")) | select(.created_at > "'"$ci_finished"'") ] | length')
+              issue_attempts=$(gh api "repos/$REPO/issues/$linked_issue/comments?per_page=100" --paginate \
+                --jq '.[] | select(.body | contains("<!-- agent-merge-gate-attempt -->")) | select(.created_at > "'"$ci_finished"'") | .id' | grep -c . || true)
               attempts=$((attempts + issue_attempts))
             done <<< "$carried_issues"
             if [ "$attempts" -ge 6 ]; then
@@ -1664,8 +1680,8 @@ jobs:
                   fi
 
                   marker='<!-- no-ci-run -->'
-                  already=$(gh api "repos/$REPO/issues/$pr_number/comments?per_page=100" \
-                    --jq "[.[] | select(.body | contains(\"$marker\"))] | length" 2>/dev/null || echo 0)
+                  already=$(gh api "repos/$REPO/issues/$pr_number/comments?per_page=100" --paginate \
+                    --jq ".[] | select(.body | contains(\"$marker\")) | .id" 2>/dev/null | grep -c . || true)
                   if [ "${already:-0}" -eq 0 ]; then
                     body="${marker}"$'\n\n'"No ${CI_WORKFLOW_NAME} run has appeared on this pull request head after ${waited} minutes, so the merge gate has nothing to read and cannot decide anything."$'\n\n'"A pull request opened with the workflow token raises no events, which is the usual cause. The remedy is the framework App-token trigger: an empty commit pushed with the App identity, which is an event the forge does deliver. See the consumer skill, section: When no CI run appears on a bot pull request."
                     gh pr comment "$pr_number" --repo "$REPO" --body "$body"
@@ -1687,8 +1703,8 @@ jobs:
               # later sweeps. A recorded verdict only counts when it is NEWER than the
               # latest CI run; the old existence check made the gate one-shot per PR.
               # Attempts are failed gates (the attempt marker) since this CI verdict.
-              latest_verdict=$(gh api "repos/$REPO/issues/$pr_number/comments?per_page=100" \
-                --jq '[.[] | select((.body | contains("<!-- agent-merge-gate -->")) and (.body | contains("**Verdict:**"))) | .created_at] | max // empty')
+              latest_verdict=$(gh api "repos/$REPO/issues/$pr_number/comments?per_page=100" --paginate \
+                --jq '.[] | select((.body | contains("<!-- agent-merge-gate -->")) and (.body | contains("**Verdict:**"))) | .created_at' | sort | tail -n 1)
               # Every issue this pull request carries, not the first of them. A promotion under
               # `env-promotion` carries the set that merged into the stage below, so a budget
               # counted against one of them is a fraction of the budget the gate is meant to have,
@@ -1696,8 +1712,8 @@ jobs:
               carried_issues="$(pr_issues "$pr_number")"
               while IFS= read -r linked_issue; do
                 [ -n "$linked_issue" ] || continue
-                issue_verdict=$(gh api "repos/$REPO/issues/$linked_issue/comments?per_page=100" \
-                  --jq '[.[] | select((.body | contains("<!-- agent-merge-gate -->")) and (.body | contains("**Verdict:**"))) | .created_at] | max // empty')
+                issue_verdict=$(gh api "repos/$REPO/issues/$linked_issue/comments?per_page=100" --paginate \
+                  --jq '.[] | select((.body | contains("<!-- agent-merge-gate -->")) and (.body | contains("**Verdict:**"))) | .created_at' | sort | tail -n 1)
                 if [ -n "$issue_verdict" ] && { [ -z "$latest_verdict" ] || [ "$issue_verdict" \> "$latest_verdict" ]; }; then
                   latest_verdict="$issue_verdict"
                 fi
@@ -1707,12 +1723,12 @@ jobs:
                 continue
               fi
 
-              attempts=$(gh api "repos/$REPO/issues/$pr_number/comments?per_page=100" \
-                --jq '[.[] | select(.body | contains("<!-- agent-merge-gate-attempt -->")) | select(.created_at > "'"$ci_finished"'") ] | length')
+              attempts=$(gh api "repos/$REPO/issues/$pr_number/comments?per_page=100" --paginate \
+                --jq '.[] | select(.body | contains("<!-- agent-merge-gate-attempt -->")) | select(.created_at > "'"$ci_finished"'") | .id' | grep -c . || true)
               while IFS= read -r linked_issue; do
                 [ -n "$linked_issue" ] || continue
-                issue_attempts=$(gh api "repos/$REPO/issues/$linked_issue/comments?per_page=100" \
-                  --jq '[.[] | select(.body | contains("<!-- agent-merge-gate-attempt -->")) | select(.created_at > "'"$ci_finished"'") ] | length')
+                issue_attempts=$(gh api "repos/$REPO/issues/$linked_issue/comments?per_page=100" --paginate \
+                  --jq '.[] | select(.body | contains("<!-- agent-merge-gate-attempt -->")) | select(.created_at > "'"$ci_finished"'") | .id' | grep -c . || true)
                 attempts=$((attempts + issue_attempts))
               done <<< "$carried_issues"
               if [ "$attempts" -ge 6 ]; then

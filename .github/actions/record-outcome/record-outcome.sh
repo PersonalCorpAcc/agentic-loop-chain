@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/record-outcome/record-outcome.sh. Profile digest: fdaf7c626ab9. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/record-outcome/record-outcome.sh. Profile digest: dee2c3b90207. Update with `workflows update --force`; consumer edits may be overwritten.
 #
 # One line per job saying what happened and why (FR-058).
 #
@@ -53,6 +53,9 @@ readonly REASONS=(
   # A human is needed, or the machinery could not proceed.
   conflict-handed-off
   review-requested
+  # A reviewer asked for changes on the pull request; apply-review answers it, not the gate
+  # (T246). Missing from this list until 20/11/2026, so the gate's step failed on first use.
+  changes-requested
   # The implementing worker asked the kit for the whole change and the kit declined:
   # refused before it wrote anything, or failed its own gates after. Its reason token
   # is its own vocabulary and belongs in the detail sentence, not in this set -- what
@@ -62,6 +65,11 @@ readonly REASONS=(
   # and a hop that happened wrongly.
   timed-out
   assertion-failed
+  # The forge refused a token outright, or its API budget ran out. Both used to read as
+  # `timed-out` after an hour of polling an answer that was never coming (007 APP-03, QA-10);
+  # an expired key on the canary in 2026 looked like a quiet day for two months.
+  credential-refused
+  rate-limited
   budget-exhausted
   egress-blocked
   runner-offline

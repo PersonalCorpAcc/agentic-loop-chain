@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/templates/canary/canary-cycle.sh. Profile digest: fdaf7c626ab9. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/templates/canary/canary-cycle.sh. Profile digest: dee2c3b90207. Update with `workflows update --force`; consumer edits may be overwritten.
 #
 # One canary cycle: a fixed trivial change, carried by the loop from an issue to the stage
 # that closes it, with every hop asserted against what the profile says should happen
@@ -42,7 +42,11 @@ CANARY_DIR="$(dirname "$CANARY_FILE")"
 AUTO_MERGE_TARGETS="${AUTO_MERGE_TARGETS:-}"
 SOAK_CSV="${SOAK_CSV:-}"
 MATRIX_FLOOR="${MATRIX_FLOOR:-0}"
-POLL_SECONDS="${POLL_SECONDS:-30}"
+# At least a minute between polls: three canaries polling every 30 seconds through a working
+# day spent the 5,000-an-hour REST budget on 20/11/2026 (review QA-10).
+POLL_SECONDS="${POLL_SECONDS:-60}"
+# Below this many REST calls left, a cycle would only time out half-way; it stops before starting.
+MIN_API_BUDGET="${MIN_API_BUDGET:-300}"
 # Bounded waits, in minutes. The implement run is the long one: a runner, the model and CI.
 IMPLEMENT_WAIT="${IMPLEMENT_WAIT:-60}"
 MERGE_WAIT="${MERGE_WAIT:-45}"
@@ -72,22 +76,46 @@ finish() {
   exit 1
 }
 
-# `until <seconds> <what> <command...>`: run the command every poll until it prints something,
-# and hand that back; past the deadline the cycle ends here, naming the hop that never came.
+# Why a forge call failed, when the answer is not "not yet": a refused token or an exhausted
+# budget will not change by waiting, and polling it for an hour hid both behind `timed-out`
+# (review QA-10). Prints the reason, or nothing for an ordinary miss.
+forge_refusal() {
+  local errors="$1"
+  if grep -qiE 'HTTP 401|Bad credentials|requires authentication' "$errors"; then
+    echo credential-refused
+  elif grep -qiE 'rate limit|HTTP 429|secondary rate' "$errors"; then
+    echo rate-limited
+  fi
+}
+
+# `until_seen <minutes> <what> <command...>`: run the command every poll until it prints
+# something, and hand that back; past the deadline the cycle ends here, naming the hop that
+# never came. A refused token ends it at once. An exhausted budget backs off to five minutes
+# between polls and, if it outlasts the deadline, says so instead of `timed-out`.
 until_seen() {
   local minutes="$1" what="$2"
   shift 2
-  local deadline=$(( $(date +%s) + minutes * 60 )) value
+  local deadline=$(( $(date +%s) + minutes * 60 )) value refusal wait="$POLL_SECONDS" errors
+  errors="$(mktemp)"
   while :; do
-    value="$("$@" 2>/dev/null || true)"
+    value="$("$@" 2>"$errors" || true)"
     if [ -n "$value" ]; then
+      rm -f "$errors"
       printf '%s\n' "$value"
       return 0
     fi
+    refusal="$(forge_refusal "$errors")"
+    if [ "$refusal" = credential-refused ]; then
+      finish credential-refused "Waiting for ${what}, the forge refused the token: $(head -n 1 "$errors")"
+    fi
     if [ "$(date +%s)" -ge "$deadline" ]; then
+      if [ "$refusal" = rate-limited ]; then
+        finish rate-limited "Waiting for ${what}, the API budget ran out and stayed out for ${minutes} minutes."
+      fi
       finish timed-out "No ${what} within ${minutes} minutes."
     fi
-    sleep "$POLL_SECONDS"
+    if [ "$refusal" = rate-limited ]; then wait=$(( wait * 2 > 300 ? 300 : wait * 2 )); else wait="$POLL_SECONDS"; fi
+    sleep "$wait"
   done
 }
 
@@ -155,6 +183,21 @@ stand_in_lands() {
     note "the stand-in armed the merge of #${pr} into ${stage}, which this repository's policy leaves to a person"
   fi
 }
+
+# ── 0. Preflight: the credentials and the budget a cycle needs ───────────────────────────
+# Each of these failed silently once. The model key and the stand-in token both expired in
+# 2026 and every later run read as an outage or a timeout (HANDOFF 20/11/2026); a cycle started
+# on an empty API budget polls until its bound and says `timed-out` (review APP-03, QA-10).
+preflight_errors="$(mktemp)"
+gh api "repos/${REPO}" --jq .full_name >/dev/null 2>"$preflight_errors" ||
+  finish "$(forge_refusal "$preflight_errors" | grep . || echo credential-refused)" "The App token cannot read ${REPO}: $(head -n 1 "$preflight_errors")"
+GH_TOKEN="$STANDIN_TOKEN" gh api "repos/${REPO}" --jq .full_name >/dev/null 2>"$preflight_errors" ||
+  finish credential-refused "The stand-in identity's token cannot read ${REPO}, so no human-gated hop could land: $(head -n 1 "$preflight_errors"). Issue a new one with Contents and Pull requests read and write."
+remaining="$(gh api rate_limit --jq .resources.core.remaining 2>/dev/null || echo 0)"
+if [ "${remaining:-0}" -lt "$MIN_API_BUDGET" ]; then
+  finish rate-limited "Only ${remaining} REST calls are left this hour, fewer than the ${MIN_API_BUDGET} a cycle needs; it would time out half-way. Nothing was written."
+fi
+rm -f "$preflight_errors"
 
 promoting=false
 case "$STRATEGY" in

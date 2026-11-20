@@ -1,5 +1,5 @@
 ---
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/workflows/agent-implement.md. Profile digest: fdaf7c626ab9. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/workflows/agent-implement.md. Profile digest: dee2c3b90207. Update with `workflows update --force`; consumer edits may be overwritten.
 env:
   VERIFY_COMMANDS: "pnpm install --frozen-lockfile && pnpm run build && pnpm run test"
   REPO_RULES: "Install with the lockfile frozen; an install that resolves a different tree is not reproducing the change under review. Run scripts through pnpm rather than npx, or a second package manager's lockfile appears in the diff."
@@ -16,6 +16,8 @@ env:
   WORKING_LABEL: bot-working
   REVIEW_LABEL: review
   PR_PENDING_LABEL: pr-pending
+  HOLD_LABEL: hold
+  ROLLBACK_LABEL: rollback
   GIT_AUTHOR_NAME: "personalcorpacc-agentic-loop[bot]"
   GIT_AUTHOR_EMAIL: "personalcorpacc-agentic-loop[bot]@users.noreply.github.com"
   GIT_COMMITTER_NAME: "personalcorpacc-agentic-loop[bot]"
@@ -161,6 +163,8 @@ jobs:
           REPO: ${{ github.repository }}
           ISSUE_NUMBER: ${{ inputs.issue-number }}
           LINKED_PR: ${{ steps.linkage.outputs.pr }}
+          HOLD_LABEL: ${{ env.HOLD_LABEL }}
+          ROLLBACK_LABEL: ${{ env.ROLLBACK_LABEL }}
         run: |
           set -euo pipefail
           if [ -z "${LINKED_PR:-}" ]; then
@@ -171,8 +175,15 @@ jobs:
           if [ "$state" = "OPEN" ]; then
             echo "open=true" >> "$GITHUB_OUTPUT"
             echo "::notice::#${ISSUE_NUMBER} already has open pull request #${LINKED_PR} from this loop. This run stops rather than opening a second one."
+          elif [ "$state" = "MERGED" ] && ! gh issue view "$ISSUE_NUMBER" --repo "$REPO" --json labels --jq '.labels[].name' \
+              | grep -qxE "${HOLD_LABEL}|${ROLLBACK_LABEL}"; then
+            # Merged and travelling: the change is on its way through the stages, so another
+            # implement would build it twice (#184 duplicated the merged #183 on loopscope,
+            # 20/11/2026). A re-implement is wanted only once the change is held or rolled back.
+            echo "open=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::#${ISSUE_NUMBER} already has merged pull request #${LINKED_PR}, and the issue is neither held nor rolled back. This run stops rather than implementing it again."
           else
-            # Merged or closed means a re-implement is legitimate.
+            # Closed unmerged, or merged and then held or rolled back: a re-implement is legitimate.
             echo "open=false" >> "$GITHUB_OUTPUT"
           fi
 
@@ -376,10 +387,23 @@ jobs:
           job_id=$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" \
             --jq '[.jobs[] | select(.name | endswith("agent"))] | last | .id // empty')
           line=""
+          # A job's log is archived after the job ends, and for a while the endpoint answers
+          # 404: read straight away, the kit's refusal came back empty and the run reported
+          # "no-action" with the issue still labelled implement (loopscope, 20/11/2026). So
+          # retry for two minutes, and say what went wrong rather than discarding it.
           if [ -n "${job_id:-}" ]; then
-            line=$(gh api "repos/$REPO/actions/jobs/${job_id}/logs" 2>/dev/null |
-              grep -oE 'outcome=(succeeded|failed|refused) phase=[a-z]+ change=[^ ]+ commits=[0-9]+ reason=[a-z-]+' |
-              tail -n 1 || true)
+            for attempt in 1 2 3 4 5 6 7 8; do
+              if log=$(gh api "repos/$REPO/actions/jobs/${job_id}/logs" 2>&1); then
+                line=$(printf '%s' "$log" |
+                  grep -oE 'outcome=(succeeded|failed|refused) phase=[a-z]+ change=[^ ]+ commits=[0-9]+ reason=[a-z-]+' |
+                  tail -n 1 || true)
+                break
+              fi
+              echo "attempt ${attempt}: the agent job's log is not readable yet: $(printf '%s' "$log" | head -n 1)"
+              sleep 15
+            done
+          else
+            echo "No agent job was found in run ${RUN_ID}."
           fi
           outcome=""
           phase=""
@@ -392,6 +416,13 @@ jobs:
             phase="${phase%% *}"
             reason="${line##*reason=}"
             [ "$outcome" = succeeded ] || declined=true
+          else
+            # No pull request and no readable outcome is never a quiet success: the work did
+            # not happen, so a person is told, exactly as for a refusal.
+            outcome=unknown
+            phase=none
+            reason="no outcome line could be read"
+            declined=true
           fi
           {
             echo "outcome=${outcome}"
@@ -400,6 +431,36 @@ jobs:
             echo "declined=${declined}"
           } >> "$GITHUB_OUTPUT"
           echo "The pipeline's outcome line: ${line:-<none printed>}"
+      # A declined run hands the issue back: a comment saying why, `review` so a person sees
+      # it, and `implement` removed so the issue stops looking queued. Without this a refusal
+      # left the issue labelled implement with nothing said, indefinitely (20/11/2026).
+      - name: Say why no pull request was opened
+        if: steps.pipeline.outputs.declined == 'true'
+        uses: ./.github/actions/create-issue-comment
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          issue-number: ${{ inputs.issue-number }}
+          body: |
+            <!-- agent-implement-declined -->
+            Implementation stopped without a pull request: `${{ steps.pipeline.outputs.outcome }}` in phase `${{ steps.pipeline.outputs.phase }}`, reason `${{ steps.pipeline.outputs.reason }}`.
+
+            The issue now carries `${{ env.REVIEW_LABEL }}` instead of `${{ env.IMPLEMENT_LABEL }}`. When whatever stopped it is resolved (a dependency merged, a question answered), add `${{ env.IMPLEMENT_LABEL }}` again to retry.
+
+            [View this workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+      - name: Hand the declined issue to a person
+        if: steps.pipeline.outputs.declined == 'true'
+        uses: ./.github/actions/add-issue-labels
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          issue-number: ${{ inputs.issue-number }}
+          labels: ${{ env.REVIEW_LABEL }}
+      - name: Take the declined issue out of the queue
+        if: steps.pipeline.outputs.declined == 'true'
+        uses: ./.github/actions/remove-issue-labels
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          issue-number: ${{ inputs.issue-number }}
+          labels: ${{ env.IMPLEMENT_LABEL }}
       - name: Record the outcome
         if: always()
         uses: ./.github/actions/record-outcome
@@ -579,6 +640,12 @@ runs-on-slim: ubuntu-24.04
 
 engine:
   id: claude
+  # The agent job's own concurrency group. The compiler's default is one group per workflow,
+  # so every implement agent in the repository queued behind the last whatever the router
+  # allowed; per issue, the router's implement lanes are the only limit (20/11/2026).
+  concurrency:
+    group: "gh-aw-implement-${{ inputs.issue-number }}"
+    cancel-in-progress: false
 model: claude-sonnet-5
 
 max-turns: 3000
