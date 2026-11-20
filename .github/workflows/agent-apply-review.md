@@ -1,5 +1,5 @@
 ---
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/workflows/agent-apply-review.md. Profile digest: fdaf7c626ab9. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/workflows/agent-apply-review.md. Profile digest: dee2c3b90207. Update with `workflows update --force`; consumer edits may be overwritten.
 env:
   # Printed by the prompt as the verification block. Consumers set their own commands.
   VERIFY_COMMANDS: "pnpm install --frozen-lockfile && pnpm run build && pnpm run test"
@@ -60,6 +60,24 @@ jobs:
       unresolved: ${{ steps.subject.outputs.unresolved }}
       threads: ${{ steps.subject.outputs.threads }}
     steps:
+      # First, so the issue can be resolved the one way the loop knows: the App's recorded
+      # linkage. The pull request body carries no closing keyword by design (FR-030), so a
+      # dispatched apply-review with no linked issue resolved none, the reserve job skipped,
+      # and the agent never ran -- silently (loopscope PR #158, 20/11/2026).
+      - name: Check out the actions this job uses
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            .github/actions/record-outcome
+            .github/actions/resolve-pr-issue
+      - name: Resolve the issue this pull request belongs to
+        id: resolve
+        uses: ./.github/actions/resolve-pr-issue
+        with:
+          token: ${{ github.token }}
+          pr-number: ${{ inputs.pr-number }}
+          repo: ${{ github.repository }}
       - name: Confirm this is our pull request and the feedback is substantive
         id: subject
         env:
@@ -67,6 +85,7 @@ jobs:
           REPO: ${{ github.repository }}
           PR: ${{ inputs.pr-number }}
           LINKED_ISSUE: ${{ inputs.linked-issue }}
+          RESOLVED_ISSUE: ${{ steps.resolve.outputs.issue }}
         run: |
           set -euo pipefail
 
@@ -88,6 +107,8 @@ jobs:
           # The issue this pull request closes, preferring the router-provided linked issue.
           if [ -n "$LINKED_ISSUE" ]; then
             issue="$LINKED_ISSUE"
+          elif [ -n "${RESOLVED_ISSUE:-}" ]; then
+            issue="$RESOLVED_ISSUE"
           else
             issue=$(printf '%s' "$pr" | jq -r '.body // ""' \
                       | grep -oiE '(close[sd]?|fixe?[sd]?|resolve[sd]?) +#[0-9]+' \
@@ -106,8 +127,11 @@ jobs:
               }
             }' \
             -f owner="${REPO%/*}" -f name="${REPO#*/}" -F number="$PR" \
-            --jq -c '[.data.repository.pullRequest.reviewThreads.nodes[]
-                      | select(.isResolved == false and .isOutdated == false)]')
+            --jq '[.data.repository.pullRequest.reviewThreads.nodes[]
+                      | select(.isResolved == false and .isOutdated == false)]' | jq -c .)
+          # gh's jq option takes an expression only: given the compact flag first, gh read the flag as the filter and the
+          # filter as a second endpoint, and failed "accepts 1 arg(s), received 2" on the first
+          # review anyone requested (loopscope PR #158, 20/11/2026).
           unresolved=$(printf '%s' "$threads" | jq 'length')
 
           # Measured and then acted on. Two events arrive for one review -- the submission and
@@ -126,12 +150,6 @@ jobs:
             echo "threads=$threads"
            } >> "$GITHUB_OUTPUT"
            echo "PR #$PR has $unresolved unresolved thread(s)"
-      - name: Check out the outcome action
-        if: always()
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          sparse-checkout: .github/actions/record-outcome
       - name: Record the outcome
         if: always()
         uses: ./.github/actions/record-outcome

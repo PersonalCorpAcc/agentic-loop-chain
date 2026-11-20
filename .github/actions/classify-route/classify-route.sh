@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/classify-route/classify-route.sh. Profile digest: fdaf7c626ab9. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/classify-route/classify-route.sh. Profile digest: dee2c3b90207. Update with `workflows update --force`; consumer edits may be overwritten.
 # Classify one GitHub event into exactly one route. Pure: no network, no gh calls, so
 # verify-route-matrix.sh can source this file and exercise the same code the router runs.
 #
