@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Managed by @plainconceptsplatform/workflows@0.5.1. Source: loops/templates/canary/canary-cycle.sh. Profile digest: fdaf7c626ab9. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/templates/canary/canary-cycle.sh. Profile digest: fdaf7c626ab9. Update with `workflows update --force`; consumer edits may be overwritten.
 #
 # One canary cycle: a fixed trivial change, carried by the loop from an issue to the stage
 # that closes it, with every hop asserted against what the profile says should happen
@@ -33,6 +33,8 @@ set -euo pipefail
 : "${MERGED_STAGE_TEMPLATE:?canary-cycle: MERGED_STAGE_TEMPLATE is required}"
 : "${MERGE_METHOD:?canary-cycle: MERGE_METHOD is required}"
 : "${CANARY_FILE:?canary-cycle: CANARY_FILE is required}"
+# Each run writes new files beside the configured one, never into a shared file.
+CANARY_DIR="$(dirname "$CANARY_FILE")"
 : "${GIT_IDENTITY:?canary-cycle: GIT_IDENTITY is required}"
 : "${RUN_ID:?canary-cycle: RUN_ID is required}"
 : "${ACTIONS_DIR:?canary-cycle: ACTIONS_DIR is required}"
@@ -169,19 +171,19 @@ if [ "$promoting" = true ]; then
   # refuses an anonymous fetch -- the defect class that found `contents: read` missing.
   git fetch -q --no-tags "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" "${first}:refs/remotes/origin/${first}"
   git switch -q -C "$base_branch" "origin/${first}"
-  mkdir -p "$(dirname "$CANARY_FILE")"
-  if [ -f "$CANARY_FILE" ]; then
-    sed -i "1s/.*/Last base-only edit: run ${RUN_ID}/" "$CANARY_FILE"
-  else
-    printf 'Last base-only edit: run %s\n\nThe agentic loop appends one line here each day (FR-060).\n' "$RUN_ID" >"$CANARY_FILE"
-  fi
-  git add -- "$CANARY_FILE"
+  # A new file per run, never an edit to a shared one: stages hold different sets of earlier
+  # runs' entries, so an append to a common file conflicts on promotion by construction
+  # (observed 20/11/2026: #26 was handed to a person over a one-line log entry).
+  base_file="${CANARY_DIR}/base-${RUN_ID}.md"
+  mkdir -p "$CANARY_DIR"
+  printf 'Base-only edit for canary run %s (FR-060).\n' "$RUN_ID" >"$base_file"
+  git add -- "$base_file"
   git -c user.name="$GIT_IDENTITY" -c user.email="${GIT_IDENTITY}@users.noreply.github.com" \
     commit -q -m "Canary: base-only edit on ${first} (run ${RUN_ID})"
   git push -q "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" "HEAD:refs/heads/${base_branch}"
   base_pr="$(gh pr create --repo "$REPO" --base "$first" --head "$base_branch" \
     --title "[canary] Base-only edit on ${first} (run ${RUN_ID})" \
-    --body "A base-only edit to \`${CANARY_FILE}\`, landed before today's canary issue exists so that its pull request has a real base commit to not carry (FR-060, FR-061)." |
+    --body "A base-only edit, \`${base_file}\`, landed before today's canary issue exists so that its pull request has a real base commit to not carry (FR-060, FR-061)." |
     sed -n 's#.*/pull/\([0-9]*\)$#\1#p')"
   [ -n "$base_pr" ] || finish assertion-failed "The base-only edit's pull request into ${first} could not be opened."
   gh pr merge "$base_pr" --repo "$REPO" "--${MERGE_METHOD}" --auto >/dev/null ||
@@ -203,7 +205,7 @@ issue_url="$(gh issue create --repo "$REPO" \
   --body "<!-- complexity: trivial -->
 The daily canary change (FR-060). The canary workflow opened this issue and watches it until it closes; nothing here needs a person.
 
-- [ ] Append the line \`canary ${RUN_ID}\` to the end of \`${CANARY_FILE}\`, creating the file if it does not exist. Change nothing else.")"
+- [ ] Create the file \`${CANARY_DIR}/run-${RUN_ID}.md\` containing the single line \`canary ${RUN_ID}\`. Change nothing else.")"
 issue="${issue_url##*/}"
 gh issue edit "$issue" --repo "$REPO" --add-label "$IMPLEMENT_LABEL" >/dev/null
 note "opened #${issue} and labelled it ${IMPLEMENT_LABEL}"
