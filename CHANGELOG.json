@@ -1,3 +1,11 @@
 {
-  "changes": []
+  "changes": [
+    {
+      "timestamp": "2026-11-20T15:24:27Z",
+      "issue": 1,
+      "title": "Accept weeks in durations",
+      "summary": "Accept weeks in durations (accept-weeks-in-durations)",
+      "commit": "d1a3b78"
+    }
+  ]
 }
