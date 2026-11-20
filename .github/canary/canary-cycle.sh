@@ -126,7 +126,9 @@ bare_login() { local login="${1#app/}"; printf '%s' "${login%\[bot\]}"; }
 
 IFS=',' read -r -a auto_targets <<<"$AUTO_MERGE_TARGETS"
 
-pr_json() { gh pr view "$1" --repo "$REPO" --json "$2"; }
+# Everything after the field is passed on: the callers filter with --jq, and dropping it
+# compared a JSON object with a branch name (the first forge run, 20/11/2026).
+pr_json() { gh pr view "$1" --repo "$REPO" --json "$2" "${@:3}"; }
 pr_merged() { [ "$(gh pr view "$1" --repo "$REPO" --json state --jq .state)" = MERGED ] && echo yes; }
 issue_has_label() { gh issue view "$1" --repo "$REPO" --json labels --jq ".labels[].name" | grep -qxF "$2" && echo yes; }
 issue_closed() { [ "$(gh issue view "$1" --repo "$REPO" --json state --jq .state)" = CLOSED ] && echo yes; }
