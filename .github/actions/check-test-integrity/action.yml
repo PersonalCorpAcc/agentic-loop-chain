@@ -1,0 +1,43 @@
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/check-test-integrity/action.yml. Profile digest: dee2c3b90207. Update with workflows update --force; consumer edits may be overwritten.
+name: Check test integrity
+description: >
+  List the ways a change weakens the repository's tests (a test file deleted or renamed away,
+  a skip marker added), deterministically, so the gate hands such a change to a person.
+inputs:
+  compare-file:
+    description: Path to the compare endpoint's JSON for the pull request, or its own file list.
+    required: true
+  test-files:
+    description: Extended regular expression for test files, composed from the declared stack packs. Empty disables the check.
+    required: false
+    default: ''
+  skip-markers:
+    description: Extended regular expression for a skip marker in a test file, composed from the declared stack packs.
+    required: false
+    default: ''
+outputs:
+  findings:
+    description: One line per finding; empty when the change leaves the tests as strong as they were.
+    value: ${{ steps.check.outputs.findings }}
+runs:
+  using: composite
+  steps:
+    - name: Check test integrity
+      id: check
+      shell: bash
+      env:
+        COMPARE_FILE: ${{ inputs.compare-file }}
+        TEST_FILES: ${{ inputs.test-files }}
+        SKIP_MARKERS: ${{ inputs.skip-markers }}
+      run: |
+        set -euo pipefail
+        findings="$(bash "${{ github.action_path }}/check-test-integrity.sh" "$COMPARE_FILE" "$TEST_FILES" "$SKIP_MARKERS")"
+        {
+          echo 'findings<<EOF'
+          printf '%s\n' "$findings"
+          echo EOF
+        } >> "$GITHUB_OUTPUT"
+        if [ -n "$findings" ]; then
+          echo "::warning::This change weakens the tests; a person will review it:"
+          printf '%s\n' "$findings"
+        fi

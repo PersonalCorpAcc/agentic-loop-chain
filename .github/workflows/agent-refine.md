@@ -1,5 +1,5 @@
 ---
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/workflows/agent-refine.md. Profile digest: fdaf7c626ab9. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/workflows/agent-refine.md. Profile digest: dee2c3b90207. Update with `workflows update --force`; consumer edits may be overwritten.
 env:
   REPO_RULES: "Install with the lockfile frozen; an install that resolves a different tree is not reproducing the change under review. Run scripts through pnpm rather than npx, or a second package manager's lockfile appears in the diff."
   PLAN_EXPLORE_SKILL: plan-explore
