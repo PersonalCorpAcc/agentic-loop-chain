@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/verify-route-matrix/verify-route-matrix.sh. Profile digest: fdaf7c626ab9. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/verify-route-matrix/verify-route-matrix.sh. Profile digest: dee2c3b90207. Update with `workflows update --force`; consumer edits may be overwritten.
 # Exercise the router's real classifier. This sources classify-route.sh rather than
 # restating it, so a change to the route table cannot pass here by being copied twice.
 #
@@ -305,6 +305,10 @@ else
   if [ -f "$VALIDATOR_SH" ]; then
     grep -q 'approve' "$VALIDATOR_SH" ||
       { GATE_POLICY_OK=0; echo "FAIL: the merge-gate validator does not accept an approve verdict, so a gate that may not merge has no verdict to give" >&2; }
+    # Step 4b resolves a conflict on green CI and says `remediated`. If the validator cannot
+    # see the conflict, it throws that fix away on the default merge-target path (WF-04).
+    grep -q 'has_conflicts=' "$VALIDATOR_SH" && grep -q 'has-conflicts: ' "$MERGE_GATE_WORKER_MD" ||
+      { GATE_POLICY_OK=0; echo "FAIL: the merge-gate validator is not told whether the pull request conflicted, so a conflict resolved on green CI is discarded" >&2; }
   fi
 fi
   # A rule holding a pull request is not a refusal aimed at us, and the loop must neither

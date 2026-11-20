@@ -1,4 +1,4 @@
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/validate-merge-gate-output/action.yml. Profile digest: fdaf7c626ab9. Update with workflows update --force; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/validate-merge-gate-output/action.yml. Profile digest: dee2c3b90207. Update with workflows update --force; consumer edits may be overwritten.
 name: Validate merge-gate output
 description: Verify agent_output.json contains a usable merge-gate verdict before any state changes.
 inputs:
@@ -15,6 +15,12 @@ inputs:
   ci-conclusion:
     description: CI conclusion supplied to the merge gate.
     required: true
+  has-conflicts:
+    description: >
+      Whether the pull request conflicted with its base when the gate started. On green CI it
+      is what makes a `remediated` verdict (the agent merged the base in and pushed) valid.
+    required: false
+    default: 'false'
 outputs:
   valid:
     description: Whether the output contains a usable merge-gate comment with a verdict.
@@ -31,11 +37,12 @@ runs:
       env:
         ISSUE_NUMBER: ${{ inputs.issue-number }}
         CI_CONCLUSION: ${{ inputs.ci-conclusion }}
+        HAS_CONFLICTS: ${{ inputs.has-conflicts }}
         OUTPUT_FILE: ${{ inputs.output-file }}
       run: |
         set -euo pipefail
 
-        outcome="$(bash "${{ github.action_path }}/validate-merge-gate-output.sh" "$OUTPUT_FILE" "$ISSUE_NUMBER" "$CI_CONCLUSION")"
+        outcome="$(bash "${{ github.action_path }}/validate-merge-gate-output.sh" "$OUTPUT_FILE" "$ISSUE_NUMBER" "$CI_CONCLUSION" "$HAS_CONFLICTS")"
         echo "outcome=$outcome" >> "$GITHUB_OUTPUT"
         echo "valid=$([ "$outcome" != 'invalid' ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
 
