@@ -1,4 +1,4 @@
-// Managed by @plainconceptsplatform/workflows@0.5.1. Source: loops/scripts/compile-agent-workflows.mjs. Profile digest: 08448fbaf1f8. Update with `workflows update --force`; consumer edits may be overwritten.
+// Managed by @plainconceptsplatform/workflows@0.5.1. Source: loops/scripts/compile-agent-workflows.mjs. Profile digest: fdaf7c626ab9. Update with `workflows update --force`; consumer edits may be overwritten.
 
 const OPENCODE_VERSION = '1.18.23'
 import { spawnSync } from "node:child_process";
@@ -9,12 +9,15 @@ const workflowDirectory = existsSync("loops/workflows") ? "loops/workflows" : ".
 
 // On Windows, `gh` resolves to a shim that spawnSync cannot find without a shell.
 // Resolve the full path via `where` so spawnSync works with shell: false (security-safe).
+// Prefer an executable: a script named `gh` earlier on PATH (a bash wrapper, say) is listed
+// first, and spawnSync cannot run a script without a shell.
 function resolveGhPath() {
   if (process.platform !== "win32") return "gh";
   const result = spawnSync("where", ["gh"], { encoding: "utf8", shell: false });
   if (result.status === 0) {
-    const first = result.stdout.split("\n").map((s) => s.trim()).find(Boolean);
-    if (first) return first;
+    const found = result.stdout.split("\n").map((s) => s.trim()).filter(Boolean);
+    const chosen = found.find((path) => /\.exe$/i.test(path)) ?? found[0];
+    if (chosen) return chosen;
   }
   return "gh";
 }

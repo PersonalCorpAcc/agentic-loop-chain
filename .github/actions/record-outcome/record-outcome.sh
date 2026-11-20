@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Managed by @plainconceptsplatform/workflows@0.5.1. Source: loops/actions/record-outcome/record-outcome.sh. Profile digest: 08448fbaf1f8. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @plainconceptsplatform/workflows@0.5.1. Source: loops/actions/record-outcome/record-outcome.sh. Profile digest: fdaf7c626ab9. Update with `workflows update --force`; consumer edits may be overwritten.
 #
 # One line per job saying what happened and why (FR-058).
 #
@@ -58,6 +58,10 @@ readonly REASONS=(
   # is its own vocabulary and belongs in the detail sentence, not in this set -- what
   # this loop did is the same either way, which is hand the issue back.
   pipeline-declined
+  # The canary cycle's two ways to fail (FR-060): a hop that never happened within its bound,
+  # and a hop that happened wrongly.
+  timed-out
+  assertion-failed
   budget-exhausted
   egress-blocked
   runner-offline
