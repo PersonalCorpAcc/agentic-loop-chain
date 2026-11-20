@@ -1,0 +1,115 @@
+# Managed by @plainconceptsplatform/workflows@0.5.1. Source: loops/templates/canary/canary-cycle.yml. Profile digest: fdaf7c626ab9. Update with `workflows update --force`; consumer edits may be overwritten.
+name: Canary cycle
+
+# The canary: once a day, one fixed trivial change carried by the loop from an issue to the
+# stage that closes it, with every hop asserted (FR-060). Ten consecutive green days on each
+# canary repository are the pilot's gate (T143).
+#
+# Plain YAML and no agent. A canary is a gate, and a gate that sometimes reaches a different
+# verdict is not one: every assertion is a question the forge answers exactly, the waits are
+# bounded, and a failure says which hop broke in the outcome line's closed vocabulary.
+#
+# The schedule is the profile's `canary.cron`, and `off` removes it -- installing this file
+# does not start the ten-day clock. Starting it is a decision, taken by setting the clock.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  # The router is dispatched for `promote` and `validate`, and the validate run's log is read.
+  actions: write
+
+# One cycle at a time: two would each carry the other's change through a chain.
+concurrency:
+  group: canary-cycle
+  cancel-in-progress: false
+
+jobs:
+  cycle:
+    name: Canary cycle
+    runs-on: ubuntu-24.04
+    # The cycle waits on a real implement run, CI, the gate, two soaks and the stand-in, each
+    # bounded on its own; this bounds the whole.
+    timeout-minutes: 300
+    steps:
+      - name: Checkout workflow actions
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Create bot token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ secrets.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_PRIVATE_KEY }}
+      - name: Run one cycle
+        id: cycle
+        env:
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          WORKFLOW_TOKEN: ${{ github.token }}
+          STANDIN_TOKEN: ${{ secrets.CANARY_STAND_IN_TOKEN }}
+          BOT_LOGIN: "personalcorpacc-agentic-loop[bot]"
+          GIT_IDENTITY: "personalcorpacc-agentic-loop[bot]"
+          STRATEGY: "branch-chain"
+          STAGES_CSV: "dev,test,main"
+          BASE_BRANCH: "dev"
+          BRANCH_POINT: "dev"
+          BRANCH_PATTERN: "^agent/[0-9]+-[0-9]+/.+$"
+          CLOSE_ISSUE_ON: "main"
+          MERGE_METHOD: "rebase"
+          AUTO_MERGE_TARGETS: "dev,test"
+          SOAK_CSV: "main=5m,test=5m"
+          IMPLEMENT_LABEL: "implement"
+          MERGED_STAGE_TEMPLATE: "merged-{stage}"
+          CANARY_FILE: "canary/LOG.md"
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          # The route matrix's pass count must not fall below what this repository has passed
+          # before, or rows went missing without failing. Set it to the last green count.
+          MATRIX_FLOOR: ${{ vars.CANARY_MATRIX_FLOOR || '0' }}
+          RUN_ID: ${{ github.run_id }}
+          ACTIONS_DIR: ${{ github.workspace }}/.github/actions
+        run: bash .github/canary/canary-cycle.sh
+      - name: Record the outcome
+        if: always()
+        uses: ./.github/actions/record-outcome
+        with:
+          outcome: ${{ steps.cycle.outputs.reason == 'acted' && 'acted' || 'failed' }}
+          reason: ${{ steps.cycle.outputs.reason || 'assertion-failed' }}
+          route: canary
+          subject: ${{ steps.cycle.outputs.issue && format('#{0}', steps.cycle.outputs.issue) || '-' }}
+          detail: ${{ steps.cycle.outputs.detail || 'The cycle stopped before it could say why; its step log is the answer.' }}
+      # One issue about a failing canary, not one per failure: a red day comments on the open
+      # one, and a green day closes it, so its history is the canary's history.
+      - name: Keep one issue about a failing canary
+        if: always()
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REPO: ${{ github.repository }}
+          BOT_LOGIN: "personalcorpacc-agentic-loop[bot]"
+          GREEN: ${{ steps.cycle.outputs.reason == 'acted' }}
+          REASON: ${{ steps.cycle.outputs.reason || 'assertion-failed' }}
+          DETAIL: ${{ steps.cycle.outputs.detail || 'The cycle stopped before it could say why.' }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          marker="<!-- canary-failure -->"
+          open=$(gh issue list --repo "$REPO" --state open --author "app/${BOT_LOGIN%\[bot\]}" --limit 50 --json number,body \
+            --jq "[.[] | select((.body // \"\") | contains(\"${marker}\"))][0].number // empty")
+          if [ "$GREEN" = true ]; then
+            if [ -n "$open" ]; then
+              gh issue comment "$open" --repo "$REPO" --body "Green again: ${DETAIL} ([run](${RUN_URL}))"
+              gh issue close "$open" --repo "$REPO" --reason completed
+            fi
+            exit 0
+          fi
+          line="\`reason=${REASON}\` -- ${DETAIL} ([run](${RUN_URL}))"
+          if [ -n "$open" ]; then
+            gh issue comment "$open" --repo "$REPO" --body "Still failing. ${line}"
+          else
+            gh issue create --repo "$REPO" --title "Canary cycle is failing" --body "${marker}
+          The daily canary cycle failed, so the ten-day count restarts (FR-060, T143).
+
+          ${line}"
+          fi
