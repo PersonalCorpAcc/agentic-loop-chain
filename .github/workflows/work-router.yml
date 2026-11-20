@@ -1,4 +1,4 @@
-# Managed by @plainconceptsplatform/workflows@0.5.1. Source: loops/workflows/work-router.yml. Profile digest: 08448fbaf1f8. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @plainconceptsplatform/workflows@0.5.1. Source: loops/workflows/work-router.yml. Profile digest: fdaf7c626ab9. Update with `workflows update --force`; consumer edits may be overwritten.
 name: "All Work Router"
 
 # Owns every repository automation trigger. Classifies each event into exactly one route,
@@ -1935,7 +1935,7 @@ jobs:
           CREDENTIAL: ${{ secrets.ANTHROPIC_API_KEY }}
           PROBE: "anthropic-messages"
           MODEL: "claude-sonnet-5"
-          REFUSAL_SIGNATURE: "billing_error|credit balance is too low"
+          REFUSAL_SIGNATURE: "billing_error|credit balance is too low|authentication_failed|invalid api key"
         run: |
           set -uo pipefail
           if [ -z "${PROBE:-}" ]; then
