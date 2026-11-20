@@ -1,10 +1,10 @@
 // The smallest thing a chain of stages can be about: a duration written the way the loop's
 // own soak values are written -- `5m`, `2h`, `1d` -- and a way back again. Enough for a change
 // to be a real one-line edit on a real file, promoted through three branches.
-const UNITS = { s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000 };
+const UNITS = { s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000, w: 604_800_000 };
 
 export function parse(value) {
-  const match = /^([1-9]\d*)([smhd])$/.exec(String(value ?? "").trim());
+  const match = /^([1-9]\d*)([smhdw])$/.exec(String(value ?? "").trim());
   if (match === null) return null;
   return Number(match[1]) * UNITS[match[2]];
 }
