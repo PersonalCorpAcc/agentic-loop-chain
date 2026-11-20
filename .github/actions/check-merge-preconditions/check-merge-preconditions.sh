@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Managed by @plainconceptsplatform/workflows@0.5.1. Source: loops/actions/check-merge-preconditions/check-merge-preconditions.sh. Profile digest: 08448fbaf1f8. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @plainconceptsplatform/workflows@0.5.1. Source: loops/actions/check-merge-preconditions/check-merge-preconditions.sh. Profile digest: fdaf7c626ab9. Update with `workflows update --force`; consumer edits may be overwritten.
 #
 # What the forge says about this pull request before anything tries to merge it (FR-068).
 #

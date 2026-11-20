@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Managed by @plainconceptsplatform/workflows@0.5.1. Source: loops/actions/verify-route-matrix/verify-route-matrix.sh. Profile digest: 08448fbaf1f8. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @plainconceptsplatform/workflows@0.5.1. Source: loops/actions/verify-route-matrix/verify-route-matrix.sh. Profile digest: fdaf7c626ab9. Update with `workflows update --force`; consumer edits may be overwritten.
 # Exercise the router's real classifier. This sources classify-route.sh rather than
 # restating it, so a change to the route table cannot pass here by being copied twice.
 #
