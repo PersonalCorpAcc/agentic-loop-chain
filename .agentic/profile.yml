@@ -110,6 +110,11 @@ crons:
   promote: "41 * * * *"
   syncStages: off
 
+canary:
+  # Off until the first hand-dispatched cycle is green; setting it starts T143's count.
+  cron: off
+  standInSecret: CANARY_STAND_IN_TOKEN
+
 constitution:
   entry: AGENTS.md
   docs: [ARCHITECTURE.md]
