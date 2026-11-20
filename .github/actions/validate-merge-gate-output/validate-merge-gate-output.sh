@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/validate-merge-gate-output/validate-merge-gate-output.sh. Profile digest: fdaf7c626ab9. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/validate-merge-gate-output/validate-merge-gate-output.sh. Profile digest: dee2c3b90207. Update with `workflows update --force`; consumer edits may be overwritten.
 # Print the deterministic merge-gate outcome: merge, approve, review, remediated, or invalid.
 #
 # `merge` and `approve` are the same judgement about the change and different answers to
@@ -16,6 +16,11 @@ output_file="$1"
 # (FR-056). Nothing here cares which: a comment is matched by the number it targets.
 issue_number="$2"
 ci_conclusion="$3"
+# Whether the gate found the pull request in conflict with its base. On green CI that is the
+# one case where the agent is told to push: step 4b merges the base in, verifies and says
+# `remediated`. Without this the validator refused that verdict and the fix was discarded on
+# the default `merge-target` path (review WF-04). Absent means no conflict.
+has_conflicts="${4:-false}"
 
 if [ ! -f "$output_file" ] || ! jq -e '.items | arrays' "$output_file" >/dev/null 2>&1; then
   echo invalid
@@ -24,7 +29,7 @@ fi
 
 # The agent emits exactly one comment on the source issue. Its verdict tells the
 # workflow which App-token state transition to perform.
-jq -r --arg issue "$issue_number" --arg conclusion "$ci_conclusion" '
+jq -r --arg issue "$issue_number" --arg conclusion "$ci_conclusion" --arg conflicts "$has_conflicts" '
   .items as $items
   | ($items
     | [.[] | select(.type == "add_comment" and (.item_number | tostring) == $issue and (.body | type == "string"))]
@@ -38,6 +43,7 @@ jq -r --arg issue "$issue_number" --arg conclusion "$ci_conclusion" '
   | if $outcome == "merge" and $conclusion == "success" and $pushes == 0 then "merge"
     elif $outcome == "approve" and $conclusion == "success" and $pushes == 0 then "approve"
     elif $outcome == "remediated" and $conclusion == "failure" and $pushes == 1 then "remediated"
+    elif $outcome == "remediated" and $conclusion == "success" and $conflicts == "true" and $pushes == 1 then "remediated"
     elif $outcome == "review" and $pushes == 0 then "review"
     else "invalid"
     end

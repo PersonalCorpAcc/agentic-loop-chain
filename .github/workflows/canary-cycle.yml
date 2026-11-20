@@ -1,4 +1,4 @@
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/templates/canary/canary-cycle.yml. Profile digest: fdaf7c626ab9. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/templates/canary/canary-cycle.yml. Profile digest: dee2c3b90207. Update with `workflows update --force`; consumer edits may be overwritten.
 name: Canary cycle
 
 # The canary: once a day, one fixed trivial change carried by the loop from an issue to the
@@ -13,6 +13,8 @@ name: Canary cycle
 # does not start the ten-day clock. Starting it is a decision, taken by setting the clock.
 
 on:
+  schedule:
+    - cron: "17 4 * * *"
   workflow_dispatch:
 
 permissions:
@@ -113,3 +115,50 @@ jobs:
 
           ${line}"
           fi
+      # The dead-man's switch (feature 007 APP-03). A canary whose cycle has stopped running
+      # cannot report it; the others can. This canary's own outcome is not changed by a quiet
+      # peer: the issue below is the alarm.
+      - name: Create a token that can read the other canaries
+        if: always()
+        id: peer-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ secrets.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_PRIVATE_KEY }}
+          # Every repository the App is installed on in this organisation, so the peers too.
+          owner: ${{ github.repository_owner }}
+      - name: Check the other canaries are still cycling
+        if: always() && steps.peer-token.outcome == 'success'
+        env:
+          PEER_TOKEN: ${{ steps.peer-token.outputs.token }}
+          ISSUE_TOKEN: ${{ steps.app-token.outputs.token }}
+          REPO: ${{ github.repository }}
+          BOT_LOGIN: "personalcorpacc-agentic-loop[bot]"
+          PEERS: "PersonalCorpAcc/agentic-loop-canary,PersonalCorpAcc/agentic-loop-release"
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          marker="<!-- canary-peer-quiet -->"
+          open=$(GH_TOKEN="$ISSUE_TOKEN" gh issue list --repo "$REPO" --state open --author "app/${BOT_LOGIN%\[bot\]}" --limit 50 --json number,body \
+            --jq "[.[] | select((.body // \"\") | contains(\"${marker}\"))][0].number // empty")
+          # One issue, open while any peer is quiet and closed when they all cycle again.
+          if quiet=$(GH_TOKEN="$PEER_TOKEN" bash .github/canary/check-peers.sh); then
+            if [ -n "$open" ]; then
+              GH_TOKEN="$ISSUE_TOKEN" gh issue comment "$open" --repo "$REPO" --body "Every peer canary is cycling again ([run](${RUN_URL}))."
+              GH_TOKEN="$ISSUE_TOKEN" gh issue close "$open" --repo "$REPO" --reason completed
+            fi
+            exit 0
+          fi
+          if [ -n "$open" ]; then
+            GH_TOKEN="$ISSUE_TOKEN" gh issue comment "$open" --repo "$REPO" --body "Still quiet ([run](${RUN_URL})):
+          ${quiet}"
+          else
+            GH_TOKEN="$ISSUE_TOKEN" gh issue create --repo "$REPO" --title "Another canary has gone quiet" --body "${marker}
+          A peer canary has not completed a cycle when it should have, so its ten-day count is not running (T143). Check its schedule (\`canary.cron\`), its credentials and whether Actions are enabled.
+
+          ${quiet}
+
+          ([run](${RUN_URL}))"
+          fi
+          echo "::error::A peer canary has gone quiet:"
+          printf '%s\n' "$quiet"

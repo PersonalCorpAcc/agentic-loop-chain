@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/validate-refine-output/validate-refine-output.sh. Profile digest: fdaf7c626ab9. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/validate-refine-output/validate-refine-output.sh. Profile digest: dee2c3b90207. Update with `workflows update --force`; consumer edits may be overwritten.
 # Print the deterministic Refine outcome: complete, split, questions, or invalid.
 
 set -euo pipefail
@@ -38,12 +38,17 @@ jq -r --arg marker "$marker" --arg prefix "$comment_prefix" --arg issue "$issue_
       ) or
       (
         .type == "add_comment" and
-        (.item_number | tostring) == $issue
+        (.item_number == null or (.item_number | tostring) == $issue)
       ) or
       .type == "create_issue");
 
+  # A comment that names no issue goes to the triggering one, as an update that names none
+  # does: the first questions on the canary arrived with item_number null and were thrown away
+  # as no outcome, though the comment itself was posted (20/11/2026). No apostrophes in here:
+  # this whole program is one single-quoted shell argument.
   def has_clarification:
-    any(.items[]; .type == "add_comment" and (.item_number | tostring) == $issue and
+    any(.items[]; .type == "add_comment" and
+      (.item_number == null or (.item_number | tostring) == $issue) and
       (.body | type == "string") and
       (.body | split($marker) | join("") | split($prefix) | join("") |
         gsub("<[^>]*>"; "") | test("[[:alnum:]]")));
