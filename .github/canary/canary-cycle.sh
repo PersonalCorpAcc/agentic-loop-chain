@@ -251,6 +251,11 @@ The daily canary change (FR-060). The canary workflow opened this issue and watc
 - [ ] Create the file \`${CANARY_DIR}/run-${RUN_ID}.md\` containing the single line \`canary ${RUN_ID}\`. Change nothing else.")"
 issue="${issue_url##*/}"
 gh issue edit "$issue" --repo "$REPO" --add-label "$IMPLEMENT_LABEL" >/dev/null
+# That was the App token's last write. It expires an hour after it was minted, and a chain
+# cycle with two soaks outlives it: on 21/11/2026 the wait for the promotion into main died
+# on "401 Bad credentials". Everything from here reads, so it reads with the workflow token,
+# which lasts as long as the job.
+export GH_TOKEN="$WORKFLOW_TOKEN"
 note "opened #${issue} and labelled it ${IMPLEMENT_LABEL}"
 
 # ── 3. The implementing pull request ─────────────────────────────────────────────────────
