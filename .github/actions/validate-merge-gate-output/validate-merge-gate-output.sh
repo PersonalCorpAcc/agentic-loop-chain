@@ -22,6 +22,11 @@ ci_conclusion="$3"
 # the default `merge-target` path (review WF-04). Absent means no conflict. Any conclusion but
 # `failure` counts: a conflicting pull request usually has no CI result at all (FR-108).
 has_conflicts="${4:-false}"
+# The pull request under assessment. An agent that addresses its verdict to the pull request
+# rather than the issue has still answered for the same subject, and throwing a valid `merge`
+# away over the number cost loopscope one of its six attempts (21/11/2026, PR #266, issue
+# #264). The conclude job posts the comment where it belongs whatever number it carried.
+pr_number="${5:-$issue_number}"
 
 if [ ! -f "$output_file" ] || ! jq -e '.items | arrays' "$output_file" >/dev/null 2>&1; then
   echo invalid
@@ -30,10 +35,10 @@ fi
 
 # The agent emits exactly one comment on the source issue. Its verdict tells the
 # workflow which App-token state transition to perform.
-jq -r --arg issue "$issue_number" --arg conclusion "$ci_conclusion" --arg conflicts "$has_conflicts" '
+jq -r --arg issue "$issue_number" --arg pr "$pr_number" --arg conclusion "$ci_conclusion" --arg conflicts "$has_conflicts" '
   .items as $items
   | ($items
-    | [.[] | select(.type == "add_comment" and (.item_number | tostring) == $issue and (.body | type == "string"))]
+    | [.[] | select(.type == "add_comment" and ((.item_number | tostring) as $n | $n == $issue or $n == $pr) and (.body | type == "string"))]
     | map(.body |
         if test("\\*\\*Verdict:\\*\\*\\s*(merge|approve|review|remediated)($|[^a-zA-Z_-])"; "i") then
           capture("\\*\\*Verdict:\\*\\*\\s*(?<v>merge|approve|review|remediated)($|[^a-zA-Z_-])"; "i").v | ascii_downcase
