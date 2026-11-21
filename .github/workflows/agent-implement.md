@@ -99,6 +99,7 @@ jobs:
       pull-requests: read
     outputs:
       eligible: ${{ steps.check.outputs.eligible }}
+      blocked_by: ${{ steps.check.outputs.blocked_by }}
       duplicate: ${{ steps.duplicate.outputs.open }}
     steps:
       - name: Skip issues planned for the future
@@ -124,6 +125,22 @@ jobs:
           if jq -e 'index("future")' >/dev/null <<<"$labels"; then
             echo "eligible=false" >> "$GITHUB_OUTPUT"
             echo "::notice::Issue #$ISSUE_NUMBER has the future label. Automated implementation skipped."
+            exit 0
+          fi
+
+          # Refine writes `Blocked by #M` when order genuinely matters (feature 007 X12). Nothing
+          # read it, so a child could be implemented before the sibling it builds on had landed.
+          # A blocker counts until it is closed; one that cannot be read counts as open.
+          body=$(gh issue view "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --json body --jq '.body // ""')
+          open_blockers=""
+          for blocker in $(grep -oiE 'blocked by #[0-9]+' <<<"$body" | grep -oE '[0-9]+' | sort -un || true); do
+            blocker_state=$(gh issue view "$blocker" --repo "$GITHUB_REPOSITORY" --json state --jq .state 2>/dev/null || echo UNKNOWN)
+            [ "$blocker_state" = "CLOSED" ] || open_blockers="${open_blockers} #${blocker}"
+          done
+          if [ -n "$open_blockers" ]; then
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+            echo "blocked_by=${open_blockers# }" >> "$GITHUB_OUTPUT"
+            echo "::notice::Issue #$ISSUE_NUMBER is blocked by${open_blockers}; it starts when they close."
             exit 0
           fi
 
@@ -474,6 +491,47 @@ jobs:
           route: implement
           subject: ${{ format('#{0}', inputs.issue-number) }}
           detail: "${{ needs.safe_outputs.outputs.created_pr_number != '' && format('Opened pull request #{0} for this issue.', needs.safe_outputs.outputs.created_pr_number) || steps.pipeline.outputs.declined == 'true' && format('The pipeline stopped: {0} in phase {1}, reason {2}. No pull request was requested.', steps.pipeline.outputs.outcome, steps.pipeline.outputs.phase, steps.pipeline.outputs.reason) || 'The run produced no pull request for this issue.' }}"
+  # Held for its blockers (X12). After the agent rather than before it, so gh-aw does not hoist it
+  # into the agent's needs, where a skip would stop every implement run (worker-custom-jobs).
+  # Releases the working label -- an issue must not look in progress with nothing running -- and
+  # says, once, what it is waiting for. The router's hourly sweep starts it again when they close.
+  hold:
+    needs: [eligibility, agent]
+    if: always() && needs.eligibility.outputs.eligible == 'false' && needs.eligibility.outputs.blocked_by != ''
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Checkout workflow actions
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Release the issue and say what it waits for
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ inputs.issue-number }}
+          BLOCKED_BY: ${{ needs.eligibility.outputs.blocked_by }}
+        run: |
+          set -euo pipefail
+          gh issue edit "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label "${{ env.WORKING_LABEL }}" || true
+          marker="<!-- implement-held-for-blockers -->"
+          already=$(gh api "repos/$GITHUB_REPOSITORY/issues/$ISSUE_NUMBER/comments?per_page=100" --paginate \
+            --jq ".[] | select(.body | contains(\"$marker\")) | .id" | grep -c . || true)
+          if [ "${already:-0}" -eq 0 ]; then
+            gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body "${marker}
+          Held: this issue is blocked by ${BLOCKED_BY}, which must land first. It keeps \`${{ env.IMPLEMENT_LABEL }}\` and starts on its own once every blocker is closed."
+          fi
+      - name: Record the outcome
+        if: always()
+        uses: ./.github/actions/record-outcome
+        with:
+          outcome: no-action
+          reason: blocked
+          route: implement
+          subject: ${{ format('#{0}', inputs.issue-number) }}
+          detail: ${{ format('Blocked by {0}; it starts when they close.', needs.eligibility.outputs.blocked_by) }}
+
   incomplete:
     needs: [agent, safe_outputs, eligibility]
     if: >
