@@ -1618,6 +1618,32 @@ jobs:
               gh issue edit "$issue" --repo "$REPO" --remove-label bot-working
             done
 
+          # Held for blockers (feature 007 X12): implement released an issue whose `Blocked by #M`
+          # was still open and said so with a marked comment. Once every blocker has closed, it is
+          # started again from here. Hourly is soon enough for work that was waiting anyway.
+          gh issue list --repo "$REPO" --label implement --state open --limit 100 --json number,labels \
+            --jq '.[] | select(([.labels[].name] | index("bot-working")) | not) | .number' |
+            while IFS= read -r issue; do
+              case "$issue" in '' | *[!0-9]*) continue ;; esac
+              held=$(gh api "repos/$REPO/issues/$issue/comments?per_page=100" --paginate \
+                --jq '.[] | select(.body | contains("<!-- implement-held-for-blockers -->")) | .id' 2>/dev/null | grep -c . || true)
+              [ "${held:-0}" -gt 0 ] || continue
+              body=$(gh issue view "$issue" --repo "$REPO" --json body --jq '.body // ""' 2>/dev/null || echo "")
+              still_open=""
+              for blocker in $(grep -oiE 'blocked by #[0-9]+' <<<"$body" | grep -oE '[0-9]+' | sort -un || true); do
+                blocker_state=$(gh issue view "$blocker" --repo "$REPO" --json state --jq .state 2>/dev/null || echo UNKNOWN)
+                [ "$blocker_state" = "CLOSED" ] || still_open="${still_open} #${blocker}"
+              done
+              if [ -n "$still_open" ]; then
+                echo "#$issue is still blocked by${still_open}."
+                continue
+              fi
+              echo "Every blocker of #$issue has closed; starting its implementation."
+              gh api "repos/$REPO/actions/workflows/work-router.yml/dispatches" --method POST \
+                -f ref="$DEFAULT_BRANCH" -f "inputs[operation]=implement" -f "inputs[issue-number]=$issue" ||
+                echo "::warning::Could not start #$issue; the next sweep will try again."
+            done
+
           gh api "repos/$REPO/pulls?state=open&per_page=100" |
             jq -r --arg repo "$REPO" '
               .[]

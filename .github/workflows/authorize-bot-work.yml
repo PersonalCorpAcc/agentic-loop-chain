@@ -16,6 +16,32 @@ permissions:
   contents: read
 
 jobs:
+  # A work label on a closed issue starts nothing: the router does not work on closed issues.
+  # Authorising it anyway left the working label on loopscope #162 for four hours with nothing
+  # running (21/11/2026). Say so instead, once, to the person who labelled it. The plain
+  # workflow token raises no event, so the comment cannot start a run of its own.
+  closed-issue:
+    if: >
+      (github.event.label.name == 'implement' ||
+       github.event.label.name == 'refine') &&
+      github.event.issue.state == 'closed' &&
+      !endsWith(github.actor, '[bot]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: Say that a closed issue starts nothing
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          LABEL: ${{ github.event.label.name }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body "@${ACTOR} this issue is closed, so the \`${LABEL}\` label starts nothing. Reopen the issue, then add the label again."
+          echo "::notice::#$ISSUE_NUMBER is closed; ${LABEL} starts nothing until it is reopened."
+
   authorize:
     # Only trigger for work labels from HUMANS (not bots),
     # and only if neither another bot run nor human review currently owns the issue.
@@ -24,7 +50,8 @@ jobs:
        github.event.label.name == 'refine') &&
       !contains(github.event.issue.labels.*.name, 'bot-working') &&
       !contains(github.event.issue.labels.*.name, 'review') &&
-      !endsWith(github.actor, '[bot]')
+      !endsWith(github.actor, '[bot]') &&
+      github.event.issue.state == 'open'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     concurrency:
