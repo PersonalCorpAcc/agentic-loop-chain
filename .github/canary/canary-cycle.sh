@@ -280,11 +280,30 @@ for index in "${!stages[@]}"; do
     wait_for="$(soak_seconds "$stage")"
     note "soaking ${wait_for}s before promoting into ${stage}"
     sleep "$(( wait_for + 30 ))"
-    GH_TOKEN="$WORKFLOW_TOKEN" gh workflow run work-router.yml --repo "$REPO" --ref "${DEFAULT_BRANCH:-main}" \
-      -f operation=promote >/dev/null
+    dispatch_promote() {
+      GH_TOKEN="$WORKFLOW_TOKEN" gh workflow run work-router.yml --repo "$REPO" --ref "${DEFAULT_BRANCH:-main}" \
+        -f operation=promote >/dev/null
+      date +%s >"$last_promote"
+    }
+    last_promote="$(mktemp)"
+    dispatch_promote
+    # A chain promotes one change at a time, oldest first. When an earlier change is still
+    # waiting -- a previous cycle's, or anybody's -- the first promote run carries that one, and
+    # this cycle's change needs another run after it lands (chain canary, 21/11/2026: the run
+    # promoted #54 and the cycle timed out waiting for #65). So while this change has no
+    # promotion and none into the stage is open, ask again, no more than every three minutes.
     promotion() {
-      gh pr list --repo "$REPO" --state all --base "$stage" --limit 30 --json number,body \
-        --jq "[.[] | select((.body // \"\") | contains(\"<!-- implement-issue: ${issue} -->\"))][0].number // empty"
+      local found
+      found="$(gh pr list --repo "$REPO" --state all --base "$stage" --limit 30 --json number,body \
+        --jq "[.[] | select((.body // \"\") | contains(\"<!-- implement-issue: ${issue} -->\"))][0].number // empty")"
+      if [ -n "$found" ]; then
+        printf '%s\n' "$found"
+        return 0
+      fi
+      if [ -z "$(gh pr list --repo "$REPO" --state open --base "$stage" --search "promotion-pr in:body" --json number --jq '.[0].number // empty')" ] &&
+        [ $(( $(date +%s) - $(cat "$last_promote") )) -ge 180 ]; then
+        dispatch_promote
+      fi
     }
     pr="$(until_seen "$PROMOTE_WAIT" "promotion of #${issue} into ${stage}" promotion)"
     pr_json "$pr" body --jq .body | grep -qF "<!-- promotion-pr: ${stage}: " ||
