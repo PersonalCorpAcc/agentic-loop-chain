@@ -307,8 +307,11 @@ else
       { GATE_POLICY_OK=0; echo "FAIL: the merge-gate validator does not accept an approve verdict, so a gate that may not merge has no verdict to give" >&2; }
     # Step 4b resolves a conflict on green CI and says `remediated`. If the validator cannot
     # see the conflict, it throws that fix away on the default merge-target path (WF-04).
-    grep -q 'has_conflicts=' "$VALIDATOR_SH" && grep -q 'has-conflicts: ' "$MERGE_GATE_WORKER_MD" ||
-      { GATE_POLICY_OK=0; echo "FAIL: the merge-gate validator is not told whether the pull request conflicted, so a conflict resolved on green CI is discarded" >&2; }
+    # An if, not `a && b || c`: shellcheck's SC2015 note failed every consumer's agentics-checks,
+    # which shellchecks this file at the default severity (found by hosted verify, QA-05).
+    if ! { grep -q 'has_conflicts=' "$VALIDATOR_SH" && grep -q 'has-conflicts: ' "$MERGE_GATE_WORKER_MD"; }; then
+      GATE_POLICY_OK=0; echo "FAIL: the merge-gate validator is not told whether the pull request conflicted, so a conflict resolved on green CI is discarded" >&2
+    fi
   fi
 fi
   # A rule holding a pull request is not a refusal aimed at us, and the loop must neither
@@ -428,32 +431,15 @@ else
     fi
   done
 
-  # Every reason literal, wherever it is written. The matrix itself is excluded: it names
-  # codes in its own failure messages, and a check that reads its own prose as evidence is
-  # not a check.
+  # Every reason literal, wherever it is written, from the one list the package's own test also
+  # reads (feature 007 QA-12: the two checks read different shapes and had drifted).
   while IFS= read -r used; do
     [ -n "$used" ] || continue
     if ! printf '%s\n' "${OUTCOME_REASONS[@]}" | grep -qxF "$used"; then
       OUTCOME_OK=0
       echo "FAIL: reason '${used}' is written in an installed file but is not in the enumeration in record-outcome.sh" >&2
     fi
-  done < <(
-    {
-      # This file is excluded by name, not by filtering its matches: -o prints the match
-      # alone, so a `grep -v verify-route-matrix` downstream has no path left to match on
-      # and excluded nothing. It went unnoticed while the matrix happened to write no
-      # reason literal of its own; the comment below then wrote one, and the check
-      # reported it against itself.
-      grep -rhoE --exclude='verify-route-matrix.sh' 'reason=[a-z][a-z-]*' "${HERE}/../"*/*.sh "${HERE}/../"*/*.yml "${HERE}/../../workflows"/*.yml "${HERE}/../../workflows"/*.md 2>/dev/null |
-        grep -v 'reason=<'
-      # A shell file assigns its reason to a variable and hands it over later, so the
-      # unquoted pattern above never saw one of them. Both shapes are read here: the
-      # promotion route collected eight codes this way, none of them checked against the
-      # enumeration until 12/09/2026.
-      grep -rhoE --exclude='verify-route-matrix.sh' 'reason="[a-z][a-z-]*"|skipped_because "[a-z][a-z-]*"' "${HERE}/../"*/*.sh 2>/dev/null |
-        sed -e 's/^skipped_because //' -e 's/^reason=//' -e 's/"//g' -e 's/^/reason=/'
-    } | sed 's/^reason=//' | sort -u
-  )
+  done < <(bash "${HERE}/../record-outcome/list-reasons.sh" "${HERE}/.." "${HERE}/../../workflows")
 fi
 if [ "$OUTCOME_OK" -eq 1 ]; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); fi
 
