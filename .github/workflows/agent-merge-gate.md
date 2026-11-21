@@ -1140,7 +1140,9 @@ timeout-minutes: 60
    serialization formats that could break consumers.
 
    **Check 4 — Tests.** Does the diff delete, weaken, or lower a threshold in a test? Flag
-   removed assertions, skipped tests, lowered coverage bars, or deleted test files.
+   removed assertions, skipped tests, lowered coverage bars, or deleted test files. Read the
+   pull request's `## Verification` section too: a `Not tested:` line naming the behaviour this
+   change exists for, or no section at all, is a ⚠️ to cite, not a pass.
 
    **Check 5 — CI/CD & Workflow files.** Does the diff change CI, CD, or workflow files?
    Flag changes to `.github/workflows/`, Dockerfiles, deployment scripts, or infrastructure
