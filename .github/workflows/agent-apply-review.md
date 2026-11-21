@@ -287,7 +287,7 @@ jobs:
           subject: ${{ needs.subject.outputs.pr && format('#{0}', needs.subject.outputs.pr) || '-' }}
           detail: "${{ needs.validate_output.outputs.outcome == 'implemented' && 'The review feedback was applied to the pull request branch.' || 'The feedback was not applied; the issue carries the review label and the reason.' }}"
   incomplete:
-    needs: [subject, agent, safe_outputs, validate_output]
+    needs: [activation, subject, agent, safe_outputs, validate_output]
     if: >
       always() &&
       needs.subject.outputs.found == 'true' &&
@@ -327,6 +327,7 @@ jobs:
           body: |
             ${{ env.REVIEW_MARKER }}
             ${{ env.INCOMPLETE_COMMENT }}
+            ${{ needs.activation.outputs.daily_ai_credits_exceeded == 'true' && format('The agent did not start: this repository has used its daily AI-credit allowance ({0} of {1}; the `GH_AW_DEFAULT_MAX_DAILY_AI_CREDITS` repository variable sets it). Work resumes once the day''s usage is back under it; raise the variable to allow more.', needs.activation.outputs.daily_ai_credits_total_effective_tokens, needs.activation.outputs.daily_ai_credits_threshold) || '' }}
             [View this workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
 
 if: needs.subject.outputs.found == 'true'

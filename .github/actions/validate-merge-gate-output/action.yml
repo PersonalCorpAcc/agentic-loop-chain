@@ -15,6 +15,13 @@ inputs:
   ci-conclusion:
     description: CI conclusion supplied to the merge gate.
     required: true
+  pr-number:
+    description: >
+      The pull request under assessment. A verdict addressed to it rather than to
+      issue-number answers for the same subject and is read too; the caller posts it where it
+      belongs.
+    required: false
+    default: ''
   has-conflicts:
     description: >
       Whether the pull request conflicted with its base when the gate started. On green CI it
@@ -38,11 +45,12 @@ runs:
         ISSUE_NUMBER: ${{ inputs.issue-number }}
         CI_CONCLUSION: ${{ inputs.ci-conclusion }}
         HAS_CONFLICTS: ${{ inputs.has-conflicts }}
+        PR_NUMBER: ${{ inputs.pr-number }}
         OUTPUT_FILE: ${{ inputs.output-file }}
       run: |
         set -euo pipefail
 
-        outcome="$(bash "${{ github.action_path }}/validate-merge-gate-output.sh" "$OUTPUT_FILE" "$ISSUE_NUMBER" "$CI_CONCLUSION" "$HAS_CONFLICTS")"
+        outcome="$(bash "${{ github.action_path }}/validate-merge-gate-output.sh" "$OUTPUT_FILE" "$ISSUE_NUMBER" "$CI_CONCLUSION" "$HAS_CONFLICTS" "${PR_NUMBER:-$ISSUE_NUMBER}")"
         echo "outcome=$outcome" >> "$GITHUB_OUTPUT"
         echo "valid=$([ "$outcome" != 'invalid' ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
 
