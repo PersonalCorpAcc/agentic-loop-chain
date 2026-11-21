@@ -211,7 +211,7 @@ jobs:
           subject: ${{ format('#{0}', inputs.issue-number) }}
           detail: "${{ job.status == 'success' && 'The issue was triaged and its labels moved on.' || 'The triage conclusion did not finish; the step log says where it stopped.' }}"
   incomplete:
-    needs: [agent, safe_outputs, validate_output]
+    needs: [activation, agent, safe_outputs, validate_output]
     if: >
       always() &&
       (
@@ -252,6 +252,7 @@ jobs:
           body: |
             ${{ env.TRIAGE_MARKER }}
             ${{ env.INCOMPLETE_COMMENT }}
+            ${{ needs.activation.outputs.daily_ai_credits_exceeded == 'true' && format('The agent did not start: this repository has used its daily AI-credit allowance ({0} of {1}; the `GH_AW_DEFAULT_MAX_DAILY_AI_CREDITS` repository variable sets it). Work resumes once the day''s usage is back under it; raise the variable to allow more.', needs.activation.outputs.daily_ai_credits_total_effective_tokens, needs.activation.outputs.daily_ai_credits_threshold) || '' }}
             [View this workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
 
 if: inputs.issue-number != ''
