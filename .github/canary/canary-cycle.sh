@@ -162,6 +162,19 @@ pr_json() { gh pr view "$1" --repo "$REPO" --json "$2" "${@:3}"; }
 pr_merged() { [ "$(gh pr view "$1" --repo "$REPO" --json state --jq .state)" = MERGED ] && echo yes; }
 issue_has_label() { gh issue view "$1" --repo "$REPO" --json labels --jq ".labels[].name" | grep -qxF "$2" && echo yes; }
 issue_closed() { [ "$(gh issue view "$1" --repo "$REPO" --json state --jq .state)" = CLOSED ] && echo yes; }
+# Does a promotion pull request carry only canary issues? Read from its own markers, and every
+# issue's title must be the canary's: one real issue in it and the stand-in must not touch it.
+only_canary_issues() {
+  local pr="$1" body issues number title
+  body="$(gh pr view "$pr" --repo "$REPO" --json body --jq .body)"
+  issues="$(grep -oE '<!-- implement-issue: [0-9]+ -->' <<<"$body" | grep -oE '[0-9]+' || true)"
+  [ -n "$issues" ] || return 1
+  for number in $issues; do
+    title="$(gh issue view "$number" --repo "$REPO" --json title --jq .title)"
+    case "$title" in "[canary] "*) ;; *) return 1 ;; esac
+  done
+  return 0
+}
 
 # The stand-in is the person the gate waits for: it approves where a rule requires a review,
 # and merges where this repository's policy says the loop does not. Its token is a person's,
@@ -291,6 +304,7 @@ for index in "${!stages[@]}"; do
       date +%s >"$last_promote"
     }
     last_promote="$(mktemp)"
+    landed_for_others="$(mktemp)"
     dispatch_promote
     # A chain promotes one change at a time, oldest first. When an earlier change is still
     # waiting -- a previous cycle's, or anybody's -- the first promote run carries that one, and
@@ -305,8 +319,21 @@ for index in "${!stages[@]}"; do
         printf '%s\n' "$found"
         return 0
       fi
-      if [ -z "$(gh pr list --repo "$REPO" --state open --base "$stage" --search "promotion-pr in:body" --json number --jq '.[0].number // empty')" ] &&
-        [ $(( $(date +%s) - $(cat "$last_promote") )) -ge 180 ]; then
+      local open_promotion
+      open_promotion="$(gh pr list --repo "$REPO" --state open --base "$stage" --search "promotion-pr in:body" --json number --jq '.[0].number // empty')"
+      if [ -n "$open_promotion" ]; then
+        # An earlier canary change ahead of this one, waiting at a human-gated stage: a cycle that
+        # failed after promoting it left it there, and every later cycle queued behind it (chain
+        # canary, 21/11/2026: #81 into main held #65, #78 and #92). The stand-in is the person
+        # for canary changes, so it lands a promotion that carries nothing else -- never one that
+        # carries anybody's real work. Once per pull request; its notes go to stderr, because
+        # this function's stdout is the answer until_seen is waiting for.
+        if ! grep -qxF "$open_promotion" "$landed_for_others" && only_canary_issues "$open_promotion"; then
+          echo "$open_promotion" >>"$landed_for_others"
+          note "landing #${open_promotion}, an earlier canary change queued ahead of #${issue} into ${stage}" >&2
+          stand_in_lands "$open_promotion" "$stage" >&2
+        fi
+      elif [ $(( $(date +%s) - $(cat "$last_promote") )) -ge 180 ]; then
         dispatch_promote
       fi
     }
