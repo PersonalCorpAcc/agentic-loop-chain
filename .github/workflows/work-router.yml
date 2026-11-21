@@ -21,10 +21,6 @@ run-name: >-
   && format('Working (Refine): {0} (#{1})', github.event.issue.title, github.event.issue.number)
   || github.event_name == 'issues'
   && github.event.label.name == 'bot-working'
-  && contains(github.event.issue.labels.*.name, 'direct')
-  && format('Working (Direct): {0} (#{1})', github.event.issue.title, github.event.issue.number)
-  || github.event_name == 'issues'
-  && github.event.label.name == 'bot-working'
   && contains(github.event.issue.labels.*.name, 'triage')
   && format('Working (Triage): {0} (#{1})', github.event.issue.title, github.event.issue.number)
   || github.event_name == 'issues'
@@ -38,10 +34,6 @@ run-name: >-
   && github.event.label.name == 'refine'
   && endsWith(github.actor, '[bot]')
   && format('Working (Refine): {0} (#{1})', github.event.issue.title, github.event.issue.number)
-  || github.event_name == 'issues'
-  && github.event.label.name == 'direct'
-  && endsWith(github.actor, '[bot]')
-  && format('Working (Direct): {0} (#{1})', github.event.issue.title, github.event.issue.number)
   || github.event_name == 'issues'
   && format('{0} label on #{1} by {2}', github.event.label.name, github.event.issue.number, github.actor)
   || github.event_name == 'issue_comment'
@@ -66,9 +58,6 @@ run-name: >-
   || github.event_name == 'workflow_dispatch'
   && inputs.operation == 'merge-gate'
   && format('Working (Merge Gate): PR #{0}', inputs.pr-number)
-  || github.event_name == 'workflow_dispatch'
-  && inputs.operation == 'batch'
-  && format('Working (Batch): #{0}', inputs.issue-number)
   || github.event_name == 'workflow_dispatch'
   && format('dispatch: {0}', inputs.operation)
   || github.event_name == 'schedule'
@@ -148,7 +137,7 @@ on:
           - validate
           - release
       issue-number:
-        description: "Issue number (required for refine / implement / direct)"
+        description: "Issue number (required for refine / implement / triage)"
         required: false
         type: string
       pr-number:
@@ -634,7 +623,7 @@ jobs:
   call-triage:
     needs: [classify, authorize]
     # Triage on issue open is for outside collaborators only (handled by dispatch-triage).
-    # A trusted actor who opens an issue should not start triage — they can add refine/implement/direct
+    # A trusted actor who opens an issue should not start triage — they can add refine or implement
     # labels or manually dispatch triage. All other triage routes (labeled, comment, dispatch) are trusted.
     if: needs.classify.outputs.route == 'triage' && needs.authorize.outputs.trusted == 'true' && !(github.event_name == 'issues' && github.event.action == 'opened')
     uses: ./.github/workflows/agent-triage.lock.yml
@@ -1587,6 +1576,8 @@ jobs:
           # triage or merge-gate run for the issue kept an abandoned implement reservation
           # alive. It now counts implement runs only, by the two shapes an implement run name
           # takes, anchored to the end of the title -- the same rule the duplicate guard uses.
+          # A pre-filter like the others (decision D4): the linkage record above is what decides,
+          # and a live implement run only defers the sweep to its next pass.
           gh issue list --repo "$REPO" --label bot-working --state open --limit 100 \
             --json number --jq '.[].number' |
             while IFS= read -r issue; do
