@@ -252,6 +252,12 @@ has_label() {
 # all three merge methods at once: a squashed change, a rebased one and a merge commit all
 # answer with the pull request they came from, which is the one question that survives the
 # forge rewriting history (FR-031).
+#
+# Merged pull requests only. The lookup also answers with every OPEN pull request whose head
+# branch merely contains the commit, and every agent branch cut from the stage contains the
+# stage's commits: on loopscope (20/11/2026) a promotion "carried" four issues whose pull
+# requests had never merged, stage-merge labelled them merged-main and stripped implement,
+# and their open pull requests could then never be gated.
 issues_behind() {
   local sha pr seen_prs="" seen_issues="" issue
   for sha in "$@"; do
@@ -264,7 +270,7 @@ issues_behind() {
       case " ${seen_issues} " in *" ${issue} "*) continue ;; esac
       seen_issues="${seen_issues} ${issue}"
       printf '%s\n' "$issue"
-    done < <(gh api "repos/${REPO}/commits/${sha}/pulls" --jq '.[].number' 2>/dev/null || true)
+    done < <(gh api "repos/${REPO}/commits/${sha}/pulls" --jq '.[] | select(.merged_at != null) | .number' 2>/dev/null || true)
   done
 }
 

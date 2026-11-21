@@ -19,7 +19,8 @@ ci_conclusion="$3"
 # Whether the gate found the pull request in conflict with its base. On green CI that is the
 # one case where the agent is told to push: step 4b merges the base in, verifies and says
 # `remediated`. Without this the validator refused that verdict and the fix was discarded on
-# the default `merge-target` path (review WF-04). Absent means no conflict.
+# the default `merge-target` path (review WF-04). Absent means no conflict. Any conclusion but
+# `failure` counts: a conflicting pull request usually has no CI result at all (FR-108).
 has_conflicts="${4:-false}"
 
 if [ ! -f "$output_file" ] || ! jq -e '.items | arrays' "$output_file" >/dev/null 2>&1; then
@@ -43,7 +44,7 @@ jq -r --arg issue "$issue_number" --arg conclusion "$ci_conclusion" --arg confli
   | if $outcome == "merge" and $conclusion == "success" and $pushes == 0 then "merge"
     elif $outcome == "approve" and $conclusion == "success" and $pushes == 0 then "approve"
     elif $outcome == "remediated" and $conclusion == "failure" and $pushes == 1 then "remediated"
-    elif $outcome == "remediated" and $conclusion == "success" and $conflicts == "true" and $pushes == 1 then "remediated"
+    elif $outcome == "remediated" and $conclusion != "failure" and $conflicts == "true" and $pushes == 1 then "remediated"
     elif $outcome == "review" and $pushes == 0 then "review"
     else "invalid"
     end
