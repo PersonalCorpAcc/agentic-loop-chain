@@ -336,6 +336,12 @@ runs-on-slim: ubuntu-24.04
 
 engine:
   id: claude
+  # The agent job's own concurrency group, per pull request. The compiler's default is one group per
+  # workflow, which serialised this worker across the whole repository whatever the router
+  # allowed; the router's caller job owns the real limit (review WF-06).
+  concurrency:
+    group: "gh-aw-apply-review-${{ inputs.pr-number }}"
+    cancel-in-progress: false
 model: claude-sonnet-5
 
 max-turns: 300
