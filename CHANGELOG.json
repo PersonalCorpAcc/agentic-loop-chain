@@ -1,6 +1,13 @@
 {
   "changes": [
     {
+      "timestamp": "2026-11-21T14:26:06Z",
+      "issue": 122,
+      "title": "[canary] Daily cycle, run 44909811768",
+      "summary": "Add canary file for run 44909811768",
+      "commit": "490113c"
+    },
+    {
       "timestamp": "2026-11-21T13:50:07Z",
       "issue": 99,
       "title": "[canary] Daily cycle, run 44904693490",
