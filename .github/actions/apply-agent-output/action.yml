@@ -43,6 +43,10 @@ inputs:
     description: Issue an update_issue item targets when it names none.
     required: false
     default: ''
+  comment-target:
+    description: When set, every add_comment is posted here whatever number the agent gave it.
+    required: false
+    default: ''
 outputs:
   item-count:
     description: Number of items the agent produced.
@@ -104,6 +108,7 @@ runs:
       with:
         output-file: ${{ steps.output.outputs.output-file }}
         token: ${{ inputs.token }}
+        target: ${{ inputs.comment-target }}
 
     - name: Apply agent label changes
       if: inputs.apply-labels == 'true' && steps.output.outputs.item-count != '0'

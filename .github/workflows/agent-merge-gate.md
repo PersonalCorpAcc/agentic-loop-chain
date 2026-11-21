@@ -601,6 +601,9 @@ jobs:
           # Step 4b pushes a merge of the base on green CI and says `remediated`; the validator
           # accepts that only when the gate saw a conflict (review WF-04).
           has-conflicts: ${{ needs.reserve.outputs.has_conflicts || 'false' }}
+          # A verdict addressed to the pull request is the same answer on the wrong page;
+          # conclude posts it on comment_target either way.
+          pr-number: ${{ needs.subject.outputs.pr }}
   conclude:
     needs: [activation, subject, protected_changes, agent, safe_outputs, validate_output]
     if: >
@@ -644,6 +647,9 @@ jobs:
           push-to-branch: 'true'
           pr-number: ${{ needs.subject.outputs.pr }}
           apply-labels: 'false'
+          # The assessment has one right place. `add-comment` is `target: "*"`, so the agent
+          # picks the number, and picking the pull request it is gating is a natural slip.
+          comment-target: ${{ needs.subject.outputs.comment_target }}
       # GITHUB_TOKEN on purpose: an App-token comment on a pull request is an issue_comment
       # event, and GITHUB_TOKEN raises none. The full assessment lives on the issue, where the
       # lifecycle is; this is what a reviewer opening the pull request sees. Carrying the
@@ -828,7 +834,7 @@ jobs:
           subject: ${{ needs.subject.outputs.pr && format('#{0}', needs.subject.outputs.pr) || '-' }}
           detail: "${{ steps.arm.outputs.armed == 'true' && 'The pull request is marked ready; the forge merges it when the rule holding it is satisfied.' || (needs.validate_output.outputs.outcome == 'merge' && needs.subject.outputs.auto_merge == 'true') && 'The pull request was merged.' || needs.validate_output.outputs.outcome == 'review' && 'The gate asked for a human; the assessment is on the issue.' || needs.validate_output.outputs.outcome == 'invalid' && 'The gate reached no verdict on this run.' || 'The gate approved the pull request; this repository does not merge into that branch unattended, so it waits for a person.' }}"
   incomplete:
-    needs: [subject, protected_changes, agent, safe_outputs, validate_output]
+    needs: [activation, subject, protected_changes, agent, safe_outputs, validate_output]
     # A pull request a reviewer has asked to change is not an incomplete run: the agent was
     # never meant to start. Saying so here would be four "ended without an outcome" comments
     # in four minutes, one per CI event, with an attempt counter that stays at 0 because the
@@ -877,6 +883,7 @@ jobs:
           body: |
             ${{ env.ATTEMPT_MARKER }}
             Attempt ${{ inputs.attempts_so_far || '0' }} of ${{ env.MAX_ATTEMPTS }} on PR #${{ needs.subject.outputs.pr }} ended without an outcome.
+            ${{ needs.activation.outputs.daily_ai_credits_exceeded == 'true' && format('The agent did not start: this repository has used its daily AI-credit allowance ({0} of {1}; the `GH_AW_DEFAULT_MAX_DAILY_AI_CREDITS` repository variable sets it). Work resumes once the day''s usage is back under it; raise the variable to allow more.', needs.activation.outputs.daily_ai_credits_total_effective_tokens, needs.activation.outputs.daily_ai_credits_threshold) || '' }}
             The issue keeps `implement`; the merge belt will retry.
             [View this workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
       - name: Report the exhausted attempt budget
@@ -888,6 +895,7 @@ jobs:
           body: |
             ${{ env.ATTEMPT_MARKER }}
             Attempt ${{ inputs.attempts_so_far || '0' }} of ${{ env.MAX_ATTEMPTS }} on PR #${{ needs.subject.outputs.pr }} ended without an outcome.
+            ${{ needs.activation.outputs.daily_ai_credits_exceeded == 'true' && format('The agent did not start: this repository has used its daily AI-credit allowance ({0} of {1}; the `GH_AW_DEFAULT_MAX_DAILY_AI_CREDITS` repository variable sets it). Work resumes once the day''s usage is back under it; raise the variable to allow more.', needs.activation.outputs.daily_ai_credits_total_effective_tokens, needs.activation.outputs.daily_ai_credits_threshold) || '' }}
             The attempt budget for this CI verdict is exhausted. The review label is set: a human must take over.
             [View this workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
       - name: Park the issue for a human
