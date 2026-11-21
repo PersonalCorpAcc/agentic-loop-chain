@@ -269,6 +269,10 @@ jobs:
     if: always()
     runs-on: ubuntu-24.04
     permissions:
+      # The checkout below needs it: an exhaustive permissions map leaves contents at none,
+      # which a public repository forgives and a private one answers with "Repository not
+      # found" (release canary, 21/11/2026: five implement attempts read as an outage).
+      contents: read
       pull-requests: write
     steps:
       - name: Checkout workflow actions
