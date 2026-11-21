@@ -327,6 +327,25 @@ jobs:
       # Fatal, not best-effort: the marker this writes is what closes the issue at the
       # stage the profile names, and a silent failure here leaves a change nothing can
       # find (FR-061, FR-030).
+      # Proof of work (feature 007 X09): a pull request says what was tested and what was not.
+      # Asked of the agent in the prompt; checked here, deterministically, so a reviewer and the
+      # gate never take silence for a passing check. The workflow token raises no event.
+      - name: Check the pull request says what was tested
+        if: needs.safe_outputs.outputs.created_pr_number != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ needs.safe_outputs.outputs.created_pr_number }}
+        run: |
+          set -euo pipefail
+          body=$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json body --jq '.body // ""')
+          if grep -qE '^## Verification' <<<"$body" && grep -qE '^Tested:' <<<"$body" && grep -qE '^Not tested:' <<<"$body"; then
+            echo "PR #$PR_NUMBER states what was tested and what was not."
+            exit 0
+          fi
+          marker="<!-- implement-no-verification -->"
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body "${marker}
+          The implementing agent did not say what it tested: this pull request has no \`## Verification\` section with \`Tested:\` and \`Not tested:\` lines. Treat its checks as unstated, and rely on CI and the review rather than on the description."
+          echo "::warning::PR #$PR_NUMBER does not state what was tested."
       - name: Verify PR closes the source issue
         if: needs.safe_outputs.outputs.created_pr_number != ''
         uses: ./.github/actions/link-pr-to-issue
@@ -970,7 +989,11 @@ timeout-minutes: 90
     Choose exactly one:
 
       - **`safeoutputs/create_pull_request`** , propose a pull request against `${{ env.BASE_BRANCH }}` with
-        the verified changes. Its `body` summarises what changed and why. Do **not** write
+        the verified changes. Its `body` summarises what changed and why, and ends with a
+        `## Verification` section of exactly two lines: `Tested:` naming each command you ran in
+        step 4 and its result, and `Not tested:` naming what you did not or could not verify and
+        why (write `nothing` only if that is true). A reviewer reads this before the diff, so do not
+        claim a check you did not run. Do **not** write
         `Closes #${{ inputs.issue-number }}`, or any other closing keyword: the forge would
         then close the issue at the first merge, and this repository decides elsewhere which
         stage ends a change's life. The link between this pull request and its issue is
