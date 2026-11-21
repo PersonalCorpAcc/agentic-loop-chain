@@ -835,6 +835,9 @@ jobs:
           fi
 
           for run_id in "${run_ids[@]}"; do
+            # Only a run id. On a 5xx gh can print the error body where the answer goes, and
+            # approving "{" is a 404 that ends the job (chain canary, 21/11/2026).
+            case "$run_id" in '' | *[!0-9]*) echo "::warning::Skipping '$run_id': not a run id"; continue ;; esac
             echo "Approving run $run_id"
             gh api "repos/$REPO/actions/runs/$run_id/approve" --method POST
           done
@@ -1380,10 +1383,16 @@ jobs:
                            and (.conclusion == "success" or .conclusion == "failure"))]
                   | sort_by(.created_at) | last // empty')
               if [ -z "$ci" ]; then
-                echo "PR #$pr conflicts and has no CI verdict on any head; nothing to gate on yet."
-                return 0
+                # CI has never completed on this branch, and cannot while it conflicts: the gate
+                # is what resolves the conflict, so it is dispatched with no CI result rather than
+                # left waiting for one that cannot come (FR-108). The head commit's date stands in
+                # for the CI time, so a verdict already given on this head is not repeated.
+                ci=$(gh api "repos/$REPO/commits/$head_sha" \
+                  --jq '{conclusion: "unknown", updated_at: .commit.committer.date, id: ""}')
+                echo "PR #$pr conflicts and CI has never run on it; dispatching the gate to resolve the conflict."
+              else
+                echo "PR #$pr conflicts, so CI cannot run on $head_sha at all; gating on the branch's last verdict."
               fi
-              echo "PR #$pr conflicts, so CI cannot run on $head_sha at all; gating on the branch's last verdict."
             fi
             ci_conclusion=$(jq -r '.conclusion' <<<"$ci")
             ci_finished=$(jq -r '.updated_at' <<<"$ci")
@@ -1628,8 +1637,13 @@ jobs:
                     )
                   | .id' |
                 while IFS= read -r run_id; do
+                  # One transient GitHub error must not end the sweep for every pull request
+                  # after this one: on 21/11/2026 a 502 put the error body where the run ids
+                  # go, approving "{" was a 404, and the chain canary's CI was never approved.
+                  case "$run_id" in '' | *[!0-9]*) continue ;; esac
                   echo "Approving trusted bot run $run_id"
-                  gh api "repos/$REPO/actions/runs/$run_id/approve" --method POST
+                  gh api "repos/$REPO/actions/runs/$run_id/approve" --method POST ||
+                    echo "::warning::Could not approve run $run_id on PR #$pr_number; the next sweep will try again."
                 done
 
               ci=$(gh api "repos/$REPO/actions/runs?head_sha=$head_sha&per_page=100" \
@@ -1648,8 +1662,10 @@ jobs:
                 # deadlocks the belt, because resolving the conflict is the gate's own job. Fall
                 # back to the branch's last verdict so the gate runs; it stays on the remediation
                 # path and cannot merge on a stale conclusion.
+                conflicting_head=false
                 mergeable_now=$(mergeable_state "$pr_number")
                 if [ "$mergeable_now" = "CONFLICTING" ]; then
+                  conflicting_head=true
                   ci=$(gh api "repos/$REPO/actions/runs?branch=$branch&per_page=100" \
                     --jq '[.workflow_runs[]
                       | select(
@@ -1659,6 +1675,14 @@ jobs:
                           and (.conclusion == "success" or .conclusion == "failure")
                         )
                       ] | sort_by(.created_at) | last // empty | [.id, .conclusion, .updated_at] | @tsv')
+                fi
+                if [ -z "$ci" ] && [ "${conflicting_head:-false}" = true ]; then
+                  # CI has never completed on this branch and cannot while it conflicts, so the
+                  # gate goes in with no CI result to resolve the conflict, instead of the pull
+                  # request being handed to a person as "no CI run" (FR-108; loopscope #213,
+                  # #214 and #231, 21/11/2026). The head commit's date stands in for the CI time.
+                  ci="$(gh api "repos/$REPO/commits/$head_sha" --jq '"none\tunknown\t" + .commit.committer.date')"
+                  echo "PR #$pr_number conflicts and CI has never run on it; dispatching the gate to resolve the conflict."
                 fi
                 if [ -z "$ci" ]; then
                   # A pull request opened with the workflow token raises no events, so its CI
@@ -1696,6 +1720,8 @@ jobs:
               fi
 
               IFS=$'\t' read -r ci_run_id ci_conclusion ci_finished <<<"$ci"
+              # A conflicting head with no CI anywhere carries no run (FR-108).
+              [ "$ci_run_id" != none ] || ci_run_id=""
 
               # A verdict is a comment carrying BOTH the gate marker and a `**Verdict:**`
               # line; progress comments and failed attempts deliberately carry neither
