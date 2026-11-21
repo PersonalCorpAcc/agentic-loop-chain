@@ -35,6 +35,8 @@ readonly REASONS=(
   merge-armed
   # Nothing to do, and why not.
   soak-pending
+  # Refine said another issue must land first and it has not (feature 007 X12).
+  blocked
   hold
   rollback
   hotfix
@@ -117,10 +119,12 @@ line="outcome=${OUTCOME} route=${ROUTE} subject=${SUBJECT} reason=${REASON}"
 } >>"${GITHUB_STEP_SUMMARY:-/dev/stdout}"
 
 # The annotations are the difference between a summary somebody has to open and an answer
-# on the run's own page. A no-action run is the one most worth seeing without clicking.
+# on the run's own page. They are also the metrics contract (feature 006 FR-007, review QA-01):
+# every outcome is an annotation, `acted` included, so a collector reads one check run's
+# annotations instead of downloading and scraping job logs -- the most expensive call the forge
+# offers, and the one the rate limit runs out on.
 case "$OUTCOME" in
-  no-action) echo "::notice::${line}${DETAIL:+ -- }${DETAIL}" ;;
   handed-to-human) echo "::warning::${line}${DETAIL:+ -- }${DETAIL}" ;;
   failed) echo "::error::${line}${DETAIL:+ -- }${DETAIL}" ;;
-  *) echo "${line}${DETAIL:+ -- }${DETAIL}" ;;
+  *) echo "::notice::${line}${DETAIL:+ -- }${DETAIL}" ;;
 esac
