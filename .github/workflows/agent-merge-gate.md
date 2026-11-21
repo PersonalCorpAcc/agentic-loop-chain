@@ -499,8 +499,21 @@ jobs:
           PR: ${{ needs.subject.outputs.pr }}
         run: |
           set -euo pipefail
-          mergeable=$(gh pr view "$PR" --repo "$REPO" --json mergeable --jq '.mergeable')
-          if [ "$mergeable" = "CONFLICTING" ]; then
+          # GitHub computes mergeability lazily and answers UNKNOWN to the first question after
+          # the base moves, which read as "no conflict": on loopscope (20/11/2026) the gate saw a
+          # DIRTY pull request as mergeable, found no CI result, and asked for review instead of
+          # resolving the conflict (FR-108). Ask until it knows, and take a DIRTY merge state as
+          # a conflict too.
+          mergeable=UNKNOWN
+          state=""
+          for _ in 1 2 3 4 5 6 7 8; do
+            read -r mergeable state < <(gh pr view "$PR" --repo "$REPO" --json mergeable,mergeStateStatus \
+              --jq '"\(.mergeable) \(.mergeStateStatus)"' 2>/dev/null || echo "UNKNOWN UNKNOWN")
+            [ "$mergeable" = "UNKNOWN" ] || break
+            sleep 5
+          done
+          echo "PR #$PR: mergeable=$mergeable, merge state=$state"
+          if [ "$mergeable" = "CONFLICTING" ] || [ "$state" = "DIRTY" ]; then
             echo "has_conflicts=true" >> "$GITHUB_OUTPUT"
           else
             echo "has_conflicts=false" >> "$GITHUB_OUTPUT"
@@ -903,6 +916,12 @@ runs-on-slim: ubuntu-24.04
 
 engine:
   id: claude
+  # The agent job's own concurrency group, per pull request. The compiler's default is one group per
+  # workflow, which serialised this worker across the whole repository whatever the router
+  # allowed; the router's caller job owns the real limit (review WF-06).
+  concurrency:
+    group: "gh-aw-merge-gate-${{ inputs.pr-number }}"
+    cancel-in-progress: false
 model: claude-sonnet-5
 
 max-turns: 300
@@ -1072,9 +1091,11 @@ timeout-minutes: 60
 
     These files are the factual basis for every check below. Do not guess — cite what you read.
 
-4b. **Merge conflict when CI is green.** If the conclusion is `success` and
+4b. **Merge conflict when CI did not fail.** If the conclusion is not `failure` and
     `has_conflicts` is `true` (current value: `${{ needs.reserve.outputs.has_conflicts }}`),
-    resolve the conflict before assessing risk. You are already on the PR branch.
+    resolve the conflict before assessing risk. A conclusion of `unknown` or `pending` with a
+    conflict is the usual case, not missing evidence: GitHub cannot run CI on a pull request
+    that conflicts with its base, so resolving the conflict is what lets CI run at all. You are already on the PR branch.
     Merge `origin/${{ needs.subject.outputs.base }}` into it
     (`git merge origin/${{ needs.subject.outputs.base }}`), resolve every
     conflict deliberately, commit the merge, and run the verification commands below. Do not
@@ -1098,8 +1119,7 @@ timeout-minutes: 60
     If the merge cannot be completed or the conflicts are genuinely ambiguous, select the `review`
     verdict instead and explain which conflicts could not be resolved safely.
 
-    If the conclusion is `success` and `has_conflicts` is `false`, skip this step and
-    proceed to step 5.
+    If `has_conflicts` is `false`, skip this step and proceed to step 5.
 
 5. Run each of these 10 checks. For each, determine a status and a short detail line.
 
