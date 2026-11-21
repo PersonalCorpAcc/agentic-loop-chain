@@ -21,6 +21,11 @@ permissions:
   contents: read
   # The router is dispatched for `promote` and `validate`, and the validate run's log is read.
   actions: write
+  # After its first writes the cycle reads with this token, because the App token expires after
+  # an hour and a chain cycle runs longer; on a private repository reading issues and pull
+  # requests needs both named.
+  issues: read
+  pull-requests: read
 
 # One cycle at a time: two would each carry the other's change through a chain.
 concurrency:
@@ -73,6 +78,14 @@ jobs:
           RUN_ID: ${{ github.run_id }}
           ACTIONS_DIR: ${{ github.workspace }}/.github/actions
         run: bash .github/canary/canary-cycle.sh
+      # The first App token is over an hour old by now on a chain; the steps below write.
+      - name: Create a fresh bot token
+        if: always()
+        id: app-token-late
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ secrets.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_PRIVATE_KEY }}
       - name: Record the outcome
         if: always()
         uses: ./.github/actions/record-outcome
@@ -87,7 +100,7 @@ jobs:
       - name: Keep one issue about a failing canary
         if: always()
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ steps.app-token-late.outputs.token }}
           REPO: ${{ github.repository }}
           BOT_LOGIN: "personalcorpacc-agentic-loop[bot]"
           GREEN: ${{ steps.cycle.outputs.reason == 'acted' }}
@@ -131,7 +144,7 @@ jobs:
         if: always() && steps.peer-token.outcome == 'success'
         env:
           PEER_TOKEN: ${{ steps.peer-token.outputs.token }}
-          ISSUE_TOKEN: ${{ steps.app-token.outputs.token }}
+          ISSUE_TOKEN: ${{ steps.app-token-late.outputs.token }}
           REPO: ${{ github.repository }}
           BOT_LOGIN: "personalcorpacc-agentic-loop[bot]"
           PEERS: "PersonalCorpAcc/agentic-loop-canary,PersonalCorpAcc/agentic-loop-release"
