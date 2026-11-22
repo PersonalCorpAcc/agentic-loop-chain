@@ -577,52 +577,41 @@ jobs:
         with:
           client-id: ${{ secrets.BOT_APP_ID }}
           private-key: ${{ secrets.BOT_PRIVATE_KEY }}
-      - name: Decide whether this failure is worth repeating
-        id: decide
+      - name: Classify the failure
+        id: classify
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
-          ATTEMPTS: ${{ inputs.attempts_so_far || '0' }}
-          PARK_AT: ${{ env.PARK_AT_ATTEMPT }}
           UNDER_MINUTES: ${{ env.RETRY_UNDER_MINUTES }}
           REFUSAL_SIGNATURE: ${{ env.REFUSAL_SIGNATURE }}
+          CREDITS_EXCEEDED: ${{ needs.activation.outputs.daily_ai_credits_exceeded || 'false' }}
+        run: bash ./.github/actions/retry-pending/classify-incomplete.sh
+      # An outage is retried at once, up to the park attempt. The daily AI-credit allowance is
+      # not an attempt -- no agent ran -- so it is deferred to the hourly sweep instead, with the
+      # issue kept and no person called (FR-113). Everything else is a person's.
+      - name: Decide whether this failure is worth repeating
+        id: decide
+        env:
+          KIND: ${{ steps.classify.outputs.kind }}
+          BILLING: ${{ steps.classify.outputs.billing }}
+          MINUTES: ${{ steps.classify.outputs.minutes }}
+          ATTEMPTS: ${{ inputs.attempts_so_far || '0' }}
+          PARK_AT: ${{ env.PARK_AT_ATTEMPT }}
         run: |
           set -euo pipefail
-          # The agent job belongs to this same run: a called workflow shares the caller's run id.
-          read -r job_id started finished <<<"$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" \
-            --jq '[.jobs[] | select(.name | endswith("agent"))] | last // empty
-                  | "\(.id // "") \(.started_at // "") \(.completed_at // "")"')"
-          minutes=-1
-          if [ -n "${started:-}" ] && [ -n "${finished:-}" ]; then
-            minutes=$(( ( $(date -u -d "$finished" +%s) - $(date -u -d "$started" +%s) ) / 60 ))
-          fi
-
-          # A failure the account caused is not an outage, and retrying it cannot work. The
-          # duration test below cannot tell them apart -- a refused request fails in about a
-          # minute, which is exactly what a short outage looks like -- so this asks the log
-          # what the provider actually said, in that provider's own words (FR-087). The
-          # framework's own `http_400_response_error` and `inference_access_error` outputs
-          # were both false for a 400 carrying `billing_error`, so they are not the signal.
-          billing=false
-          if [ -n "${job_id:-}" ] && [ -n "${REFUSAL_SIGNATURE:-}" ] &&
-             gh api "repos/$REPO/actions/jobs/${job_id}/logs" 2>/dev/null |
-               grep -qiE "${REFUSAL_SIGNATURE}"; then
-            billing=true
-          fi
-
           retry=false
-          # An unknown duration is treated as a long run: never retry on a guess.
-          if [ "$billing" = false ] && [ "$minutes" -ge 0 ] && [ "$minutes" -lt "$UNDER_MINUTES" ] && [ "$ATTEMPTS" -lt "$PARK_AT" ]; then
-            retry=true
-          fi
+          deferred=false
+          if [ "$KIND" = outage ] && [ "$ATTEMPTS" -lt "$PARK_AT" ]; then retry=true; fi
+          if [ "$KIND" = credits ]; then deferred=true; fi
           {
             echo "retry=$retry"
-            echo "billing=$billing"
+            echo "deferred=$deferred"
+            echo "billing=$BILLING"
             echo "next=$((ATTEMPTS + 1))"
-            echo "minutes=$minutes"
+            echo "minutes=$MINUTES"
           } >> "$GITHUB_OUTPUT"
-          echo "agent job ran for ${minutes}m; attempts so far ${ATTEMPTS}; billing=${billing}; retry=${retry}"
+          echo "kind=${KIND}; attempts so far ${ATTEMPTS}; retry=${retry}; deferred=${deferred}"
       # The attempt is recorded before any label moves, so a failure in the steps below leaves a
       # run that can be counted rather than an issue released with nothing to show for it.
       - name: Report the failed attempt
@@ -647,8 +636,8 @@ jobs:
           issue-number: ${{ inputs.issue-number }}
           body: |
             ${{ env.ATTEMPT_MARKER }}
-            The model provider refused this run: the account behind this repository's model credential has no credit. Nothing is wrong with the issue or the branch, and retrying will not help until somebody tops the account up.
-            The issue keeps `implement` and will be picked up on the next attempt once the account works.
+            The model provider refused this run: the account behind this repository's model credential has no credit, or the credential itself was refused. Nothing is wrong with the issue or the branch, and retrying will not help until somebody fixes the account.
+            The issue is handed to a person: once the account works, remove `${{ env.REVIEW_LABEL }}` and add `implement` again.
             [View this workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
       - name: Release the reservation after a billing failure
         if: steps.decide.outputs.billing == 'true'
@@ -676,16 +665,40 @@ jobs:
           REF: ${{ github.event.repository.default_branch }}
           ISSUE_NUMBER: ${{ inputs.issue-number }}
           NEXT: ${{ steps.decide.outputs.next }}
+          RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
           # The provider recovers in seconds, so pause before re-entering rather than dispatching
           # back into the same outage. The router's own classify and authorize jobs add more.
           sleep 30
+          # `retry-of` names this run, which is still in progress while it dispatches: without
+          # it the router's in-flight check saw this run as an implement already running for
+          # the issue and dropped every retry as a duplicate (loopscope #164, 21/11/2026).
           gh workflow run work-router.yml --repo "$REPO" --ref "$REF" \
-            -f operation=implement -f issue-number="$ISSUE_NUMBER" -f attempts_so_far="$NEXT"
+            -f operation=implement -f issue-number="$ISSUE_NUMBER" -f attempts_so_far="$NEXT" \
+            -f retry-of="$RUN_ID"
           echo "Re-dispatched implement for #$ISSUE_NUMBER as attempt $NEXT."
+      # The daily allowance: the issue keeps `implement`, only the reservation comes off, and the
+      # hourly sweep starts it again once it has waited the retry window (FR-113).
+      - name: Release the reservation until the allowance resets
+        if: steps.decide.outputs.deferred == 'true'
+        uses: ./.github/actions/remove-issue-labels
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          issue-number: ${{ inputs.issue-number }}
+          labels: ${{ env.WORKING_LABEL }}
+      - name: Say the run will be retried
+        if: steps.decide.outputs.deferred == 'true'
+        uses: ./.github/actions/create-issue-comment
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          issue-number: ${{ inputs.issue-number }}
+          body: |
+            <!-- agent-retry-pending: implement credits -->
+            The agent did not start: this repository has used its daily AI-credit allowance (${{ needs.activation.outputs.daily_ai_credits_total_effective_tokens }} of ${{ needs.activation.outputs.daily_ai_credits_threshold }}; the `GH_AW_DEFAULT_MAX_DAILY_AI_CREDITS` repository variable sets it). Nothing is wrong with the issue. It keeps `implement`, and the hourly sweep starts it again; raise the variable to allow more today.
+            [View this workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
       - name: Release the selected issue
-        if: steps.decide.outputs.retry != 'true'
+        if: steps.decide.outputs.retry != 'true' && steps.decide.outputs.deferred != 'true'
         uses: ./.github/actions/remove-issue-labels
         with:
           token: ${{ steps.app-token.outputs.token }}
@@ -694,14 +707,14 @@ jobs:
             ${{ env.WORKING_LABEL }}
             implement
       - name: Flag for human review
-        if: steps.decide.outputs.retry != 'true'
+        if: steps.decide.outputs.retry != 'true' && steps.decide.outputs.deferred != 'true'
         uses: ./.github/actions/add-issue-labels
         with:
           token: ${{ steps.app-token.outputs.token }}
           issue-number: ${{ inputs.issue-number }}
           labels: ${{ env.REVIEW_LABEL }}
       - name: Report missing implementation outcome
-        if: steps.decide.outputs.retry != 'true'
+        if: steps.decide.outputs.retry != 'true' && steps.decide.outputs.deferred != 'true'
         uses: ./.github/actions/create-issue-comment
         with:
           token: ${{ steps.app-token.outputs.token }}
