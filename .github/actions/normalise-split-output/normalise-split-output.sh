@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/normalise-split-output/normalise-split-output.sh. Profile digest: dee2c3b90207. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/normalise-split-output/normalise-split-output.sh. Profile digest: ede943dfa18d. Update with `workflows update --force`; consumer edits may be overwritten.
 #
 # Make a refine split's safe outputs safe to apply, before gh-aw's handlers read them
 # (FR-114). Runs as a post-step of refine's agent job: after gh-aw has ingested the agent's

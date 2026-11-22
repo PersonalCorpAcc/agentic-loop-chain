@@ -1,5 +1,5 @@
 ---
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/workflows/agent-apply-review.md. Profile digest: dee2c3b90207. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/workflows/agent-apply-review.md. Profile digest: ede943dfa18d. Update with `workflows update --force`; consumer edits may be overwritten.
 env:
   # Printed by the prompt as the verification block. Consumers set their own commands.
   VERIFY_COMMANDS: "pnpm install --frozen-lockfile && pnpm run build && pnpm run test"
@@ -279,6 +279,16 @@ jobs:
           token: ${{ steps.app-token.outputs.token }}
           issue-number: ${{ needs.subject.outputs.issue }}
           labels: ${{ env.WORKING_LABEL }}
+      # A standing change request holds the gate until its author looks again, and nothing
+      # told them to: loopscope #329 waited two hours after a correct fix (FR-121).
+      - name: Ask for a re-review
+        if: needs.validate_output.outputs.outcome == 'implemented'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ needs.subject.outputs.pr }}
+        run: bash ./.github/actions/ask-for-re-review/ask-for-re-review.sh
       - name: Flag review outcome
         if: needs.validate_output.outputs.outcome != 'implemented'
         uses: ./.github/actions/add-issue-labels
@@ -388,7 +398,12 @@ steps:
       mkdir -p /tmp/gh-aw/agent
       # The change request made as a review body, as the subject job selected it (FR-118).
       printf '%s' "${THREADS:-[]}" | jq '[.[] | select(.kind == "review")]' > /tmp/gh-aw/agent/change-requests.json
-      gh pr diff "$PR" --repo "$REPO" > /tmp/gh-aw/agent/diff.patch
+      # gh 2.97 refuses to print a diff holding a terminal escape sequence, so a pull request
+      # that adds one (a test stripping colour codes, loopscope #348) crashed this step. The file
+      # is read as text, not shown on a terminal: pass the flag wherever this gh offers it.
+      diff_flags=()
+      if gh pr diff --help 2>&1 | grep -q -- '--allow-escape-sequences'; then diff_flags=(--allow-escape-sequences); fi
+      gh pr diff "$PR" --repo "$REPO" "${diff_flags[@]}" > /tmp/gh-aw/agent/diff.patch
       gh api "repos/$REPO/pulls/$PR/comments" --paginate \
         --jq '[.[] | {id, path, line, author: .user.login, body, in_reply_to_id}]' \
         > /tmp/gh-aw/agent/review-comments.json
@@ -434,6 +449,13 @@ safe-outputs:
     # so it can only warn, and a warning on every run trains people to ignore
     # the log. Protection is enforced by the forge at push time regardless.
     check-branch-protection: false
+    # gh-aw diffs the push against the old pull request head, so merging the target branch in
+    # to resolve a conflict reads as the agent editing every protected file the target has
+    # changed since: PR #319 (loopscope, 22/11/2026) was refused for README.md, package.json
+    # and pnpm-lock.yaml that were already on dev, and ended without an outcome. The rule that
+    # matters is the merge gate's protected_changes job, which compares the pull request with
+    # its base as it is now and hands any protected file to a person. As in the gate (FR-120).
+    protected-files: allowed
   add-comment:
     target: "*"
 

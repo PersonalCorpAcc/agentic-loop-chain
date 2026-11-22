@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/validate-merge-gate-output/validate-merge-gate-output.sh. Profile digest: dee2c3b90207. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/validate-merge-gate-output/validate-merge-gate-output.sh. Profile digest: ede943dfa18d. Update with `workflows update --force`; consumer edits may be overwritten.
 # Print the deterministic merge-gate outcome: merge, approve, review, remediated, or invalid.
 #
 # `merge` and `approve` are the same judgement about the change and different answers to
