@@ -1,4 +1,4 @@
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/templates/canary/canary-cycle.yml. Profile digest: dee2c3b90207. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/templates/canary/canary-cycle.yml. Profile digest: ede943dfa18d. Update with `workflows update --force`; consumer edits may be overwritten.
 name: Canary cycle
 
 # The canary: once a day, one fixed trivial change carried by the loop from an issue to the
@@ -147,7 +147,7 @@ jobs:
           ISSUE_TOKEN: ${{ steps.app-token-late.outputs.token }}
           REPO: ${{ github.repository }}
           BOT_LOGIN: "personalcorpacc-agentic-loop[bot]"
-          PEERS: "PersonalCorpAcc/agentic-loop-canary,PersonalCorpAcc/agentic-loop-release"
+          PEERS: "canary,release"
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail

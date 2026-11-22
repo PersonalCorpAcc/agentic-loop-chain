@@ -1,4 +1,4 @@
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/validate-triage-output/action.yml. Profile digest: dee2c3b90207. Update with workflows update --force; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/validate-triage-output/action.yml. Profile digest: ede943dfa18d. Update with workflows update --force; consumer edits may be overwritten.
 name: Validate triage output
 description: Verify agent_output.json contains a usable triage verdict before any GitHub writes.
 inputs:
