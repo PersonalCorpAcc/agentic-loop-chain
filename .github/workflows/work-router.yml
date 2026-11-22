@@ -1280,61 +1280,26 @@ jobs:
           # The branch the merged pull request moved, which is the only branch whose open
           # pull requests this merge can have invalidated (FR-037).
           MERGED_BASE: ${{ github.event.pull_request.base.ref }}
+          CI_WORKFLOW_NAME: "CI"
+          MERGE_GATE_ATTEMPTS: "6"
         run: |
           set -euo pipefail
-          # The issue a pull request belongs to is the App's marker, not a closing keyword:
-          # this loop no longer writes keywords, so the forge's own link is empty for every
-          # pull request it opens. One rule, in one file, sourced (FR-030).
-          # shellcheck source=../actions/resolve-pr-issue/resolve-pr-issue.sh
-          . "$GITHUB_WORKSPACE/.github/actions/resolve-pr-issue/resolve-pr-issue.sh"
+          # The rules both merge-gate sweeps share, in one file (feature 007 WF-13): mergeability,
+          # the CI verdict with its conflict fallback, the verdict and attempt counts across every
+          # carried issue, the live-gate pre-filter and the dispatch.
+          # shellcheck source=../actions/merge-gate-sweep/merge-gate-sweep.sh
+          . "$GITHUB_WORKSPACE/.github/actions/merge-gate-sweep/merge-gate-sweep.sh"
 
-          # Dispatch the Merge Gate for one pull request when it is a red-CI open, non-draft,
-          # bot-authored pull request on this repository whose CI has concluded — the
-          # conflict case is one arm of that, because a conflicting PR never gets a fresh
-          # CI run of its own; a merge conflict with red or concluded CI is the same
-          # "needs the gate" signal. A green non-conflicting PR is left for the merge belt
-          # to pick up when its checks finish (bot-approve / reconcile).
-          # GitHub computes mergeability on demand. The first read of a pull request nobody has
-          # opened recently answers UNKNOWN through the API and null through REST, while it works
-          # the answer out in the background. Reading once therefore reports "not conflicting"
-          # for precisely the stale conflicting pull requests that need the gate. Ask until it
-          # settles.
-          mergeable_state() {
-            local pr="$1" state=UNKNOWN
-            for _ in 1 2 3 4 5 6; do
-              state=$(gh pr view "$pr" --repo "$REPO" --json mergeable --jq '.mergeable' 2>/dev/null || echo UNKNOWN)
-              [ "$state" = "UNKNOWN" ] || break
-              sleep 5
-            done
-            echo "$state"
-          }
-
-          # A gate already queued or running for this pull request will read the same CI verdict;
-          # a second dispatch queues behind merge-belt and the single-slot queue cancels it.
-          #
-          # So this is a pre-filter too: `merge-belt-<base>` is what makes a duplicate gate
-          # harmless, and this only avoids starting one. It matches the exact title a *dispatch*
-          # renders, which is the only shape that carries a pull request number -- a gate a
-          # human starts with the `merge-gate` label, or one a failed CI run triggers, has a
-          # different run name and is invisible here. That is acceptable for a filter and would
-          # not be for a guard, which is the distinction worth keeping in mind before this is
-          # ever relied on for correctness.
-          gate_is_live() {
-            local pr="$1" status live
-            for status in queued in_progress waiting pending; do
-              live=$(gh api "repos/$REPO/actions/workflows/work-router.yml/runs?status=$status&per_page=100" \
-                --jq "[.workflow_runs[] | select(.display_title == \"Working (Merge Gate): PR #${pr}\")] | length" 2>/dev/null || echo 0)
-              [ "${live:-0}" -eq 0 ] || return 0
-            done
-            return 1
-          }
-
+          # Dispatch the Merge Gate for one pull request when it is an open, non-draft, bot-authored
+          # pull request on this repository that conflicts or whose CI failed. A conflicting pull
+          # request never gets a fresh CI run of its own, so the conflict is one arm of "needs the
+          # gate". A green, mergeable one is left to the reconcile belt and its own checks.
           maybe_dispatch() {
-            pr="$1"
+            local pr="$1" meta head_sha head_ref ci ci_run_id ci_conclusion ci_finished
             [ -n "$pr" ] || return 0
 
             meta=$(gh api "repos/$REPO/pulls/$pr" \
-              --jq '{state:.state, draft:.draft, bot:.user.type, head:(.head.repo.full_name // "")}' \
+              --jq '{state:.state, draft:.draft, bot:.user.type, head:(.head.repo.full_name // ""), sha:.head.sha, ref:.head.ref}' \
               2>/dev/null || echo '')
             [ -n "$meta" ] || return 0
             if [ "$(jq -r '.state' <<<"$meta")" != "open" ] \
@@ -1343,111 +1308,22 @@ jobs:
               || [ "$(jq -r '.head'  <<<"$meta")" != "$REPO" ]; then
               return 0
             fi
+            head_sha=$(jq -r '.sha' <<<"$meta")
+            head_ref=$(jq -r '.ref' <<<"$meta")
 
-            # Only dispatch when CI has already concluded. A conflict while CI is still
-            # running is handled by the CI-completion route; dispatching now would make the
-            # gate read a 'pending' conclusion and prematurely ask for human review.
-            head_sha=$(gh api "repos/$REPO/pulls/$pr" --jq '.head.sha')
-            ci=$(gh api "repos/$REPO/actions/runs?head_sha=$head_sha&per_page=100" \
-              --jq '[.workflow_runs[]
-                | select(.name == "CI" and .status == "completed"
-                         and (.conclusion == "success" or .conclusion == "failure"))]
-                | sort_by(.created_at) | last // empty')
-            if [ -z "$ci" ]; then
-              # A conflicting pull request has no merge ref for GitHub to build, so a
-              # `pull_request` CI workflow can never run on that head: refs/pull/N/merge is a
-              # 404 for as long as the conflict lasts. Waiting for a verdict that cannot arrive
-              # deadlocks the belt, because resolving the conflict is the gate's own job. Fall
-              # back to the branch's last verdict so the gate runs; it stays on the remediation
-              # path and cannot merge on a stale conclusion.
-              head_ref=$(gh api "repos/$REPO/pulls/$pr" --jq '.head.ref')
-              mergeable_now=$(mergeable_state "$pr")
-              if [ "$mergeable_now" != "CONFLICTING" ]; then
-                echo "PR #$pr has no concluded CI run; deferring to the CI-completion route."
-                return 0
-              fi
-              ci=$(gh api "repos/$REPO/actions/runs?branch=$head_ref&per_page=100" \
-                --jq '[.workflow_runs[]
-                  | select(.name == "CI" and .status == "completed"
-                           and (.conclusion == "success" or .conclusion == "failure"))]
-                  | sort_by(.created_at) | last // empty')
-              if [ -z "$ci" ]; then
-                # CI has never completed on this branch, and cannot while it conflicts: the gate
-                # is what resolves the conflict, so it is dispatched with no CI result rather than
-                # left waiting for one that cannot come (FR-108). The head commit's date stands in
-                # for the CI time, so a verdict already given on this head is not repeated.
-                ci=$(gh api "repos/$REPO/commits/$head_sha" \
-                  --jq '{conclusion: "unknown", updated_at: .commit.committer.date, id: ""}')
-                echo "PR #$pr conflicts and CI has never run on it; dispatching the gate to resolve the conflict."
-              else
-                echo "PR #$pr conflicts, so CI cannot run on $head_sha at all; gating on the branch's last verdict."
-              fi
+            # Only once CI has concluded: a conflict while CI is still running is the CI-completion
+            # route's, and dispatching now would make the gate read a pending conclusion.
+            if ! ci="$(gate_ci "$pr" "$head_sha" "$head_ref")"; then
+              echo "PR #$pr has no concluded CI run; deferring to the CI-completion route."
+              return 0
             fi
-            ci_conclusion=$(jq -r '.conclusion' <<<"$ci")
-            ci_finished=$(jq -r '.updated_at' <<<"$ci")
-            ci_run_id=$(jq -r '.id' <<<"$ci")
+            IFS=$'\t' read -r ci_run_id ci_conclusion ci_finished <<<"$ci"
 
-            # GitHub computes mergeability asynchronously; poll until it is known (not null).
-            mergeable=""
-            for _ in 1 2 3 4 5 6; do
-              mergeable=$(gh api "repos/$REPO/pulls/$pr" --jq '.mergeable // "null"' 2>/dev/null || echo null)
-              [ "$mergeable" = "null" ] || break
-              sleep 5
-            done
-
-            if [ "$mergeable" != "false" ] && [ "$ci_conclusion" != "failure" ]; then
+            if [ "$(mergeable_state "$pr")" != "CONFLICTING" ] && [ "$ci_conclusion" != "failure" ]; then
               # Mergeable and green: the reconcile belt and the PR's own checks finish it.
               return 0
             fi
-
-            # A terminal verdict newer than this CI run means a gate already decided;
-            # failed attempts (the attempt marker) deliberately do not count.
-            verdict=$(gh api "repos/$REPO/issues/$pr/comments?per_page=100" --paginate \
-              --jq '.[] | select((.body | contains("<!-- agent-merge-gate -->")) and (.body | contains("**Verdict:**"))) | .created_at' | sort | tail -n 1)
-            # Every issue this pull request carries, not the first of them. A promotion under
-            # `env-promotion` carries the set that merged into the stage below, so a budget
-            # counted against one of them is a fraction of the budget the gate is meant to have,
-            # and a verdict recorded on another of them would not be seen at all (FR-056).
-            carried_issues="$(pr_issues "$pr")"
-            while IFS= read -r linked_issue; do
-              [ -n "$linked_issue" ] || continue
-              issue_verdict=$(gh api "repos/$REPO/issues/$linked_issue/comments?per_page=100" --paginate \
-                --jq '.[] | select((.body | contains("<!-- agent-merge-gate -->")) and (.body | contains("**Verdict:**"))) | .created_at' | sort | tail -n 1)
-              if [ -n "$issue_verdict" ] && { [ -z "$verdict" ] || [ "$issue_verdict" \> "$verdict" ]; }; then
-                verdict="$issue_verdict"
-              fi
-            done <<< "$carried_issues"
-            if [ -n "$verdict" ] && [ "$verdict" \> "$ci_finished" ]; then
-              echo "PR #$pr already has a gate verdict newer than CI; skipping."
-              return 0
-            fi
-
-            attempts=$(gh api "repos/$REPO/issues/$pr/comments?per_page=100" --paginate \
-              --jq '.[] | select(.body | contains("<!-- agent-merge-gate-attempt -->")) | select(.created_at > "'"$ci_finished"'") | .id' | grep -c . || true)
-            while IFS= read -r linked_issue; do
-              [ -n "$linked_issue" ] || continue
-              issue_attempts=$(gh api "repos/$REPO/issues/$linked_issue/comments?per_page=100" --paginate \
-                --jq '.[] | select(.body | contains("<!-- agent-merge-gate-attempt -->")) | select(.created_at > "'"$ci_finished"'") | .id' | grep -c . || true)
-              attempts=$((attempts + issue_attempts))
-            done <<< "$carried_issues"
-            if [ "$attempts" -ge 6 ]; then
-              echo "PR #$pr already consumed $attempts gate attempts on this CI verdict, parking for review."
-              return 0
-            fi
-            if gate_is_live "$pr"; then
-              echo "PR #$pr: a merge-gate run is already live; not dispatching another."
-              return 0
-            fi
-
-            echo "PR #$pr is $([ "$mergeable" = "false" ] && echo conflicting || echo red-CI) (CI $ci_conclusion); dispatching Merge Gate (attempt $((attempts + 1)) of 6)."
-            gh api "repos/$REPO/actions/workflows/work-router.yml/dispatches" \
-              --method POST \
-              -f ref="$DEFAULT_BRANCH" \
-              -f "inputs[operation]=merge-gate" \
-              -f "inputs[pr-number]=$pr" \
-              -f "inputs[ci-conclusion]=$ci_conclusion" \
-              -f "inputs[ci-run-id]=$ci_run_id" \
-                -f "inputs[attempts_so_far]=$attempts"
+            dispatch_gate_if_due "$pr" "$ci_run_id" "$ci_conclusion" "$ci_finished"
           }
 
           if [ "$ACTION" = "closed" ]; then
@@ -1519,42 +1395,13 @@ jobs:
           # executes the default-branch copy, so a dispatch at `cutFrom` would run whatever
           # router that branch happens to hold. Under a chain that is a stale one (FR-025).
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          MERGE_GATE_ATTEMPTS: "6"
         run: |
           set -euo pipefail
-          # The issue a pull request belongs to is the App's marker, not a closing keyword:
-          # this loop no longer writes keywords, so the forge's own link is empty for every
-          # pull request it opens. One rule, in one file, sourced (FR-030).
-          # shellcheck source=../actions/resolve-pr-issue/resolve-pr-issue.sh
-          . "$GITHUB_WORKSPACE/.github/actions/resolve-pr-issue/resolve-pr-issue.sh"
-
-          # GitHub computes mergeability on demand. The first read of a pull request nobody has
-          # opened recently answers UNKNOWN through the API and null through REST, while it works
-          # the answer out in the background. Reading once therefore reports "not conflicting"
-          # for precisely the stale conflicting pull requests that need the gate. Ask until it
-          # settles.
-          mergeable_state() {
-            local pr="$1" state=UNKNOWN
-            for _ in 1 2 3 4 5 6; do
-              state=$(gh pr view "$pr" --repo "$REPO" --json mergeable --jq '.mergeable' 2>/dev/null || echo UNKNOWN)
-              [ "$state" = "UNKNOWN" ] || break
-              sleep 5
-            done
-            echo "$state"
-          }
-
-          # A gate already queued or running for this pull request will read the same CI verdict;
-          # a second dispatch queues behind merge-belt and the single-slot queue cancels it.
-          # A pre-filter, as in the reconcile belt: the concurrency group is the mechanism, and
-          # this matches only the title a dispatch renders.
-          gate_is_live() {
-            local pr="$1" status live
-            for status in queued in_progress waiting pending; do
-              live=$(gh api "repos/$REPO/actions/workflows/work-router.yml/runs?status=$status&per_page=100" \
-                --jq "[.workflow_runs[] | select(.display_title == \"Working (Merge Gate): PR #${pr}\")] | length" 2>/dev/null || echo 0)
-              [ "${live:-0}" -eq 0 ] || return 0
-            done
-            return 1
-          }
+          # The rules both merge-gate sweeps share, in one file (feature 007 WF-13). It sources
+          # resolve-pr-issue.sh for pr_issues as well.
+          # shellcheck source=../actions/merge-gate-sweep/merge-gate-sweep.sh
+          . "$GITHUB_WORKSPACE/.github/actions/merge-gate-sweep/merge-gate-sweep.sh"
 
           # Stale reservation sweep. Labelling ten issues at once labels all ten immediately,
           # because authorize-bot-work is keyed per issue, while the implement concurrency group
@@ -1663,135 +1510,44 @@ jobs:
                     echo "::warning::Could not approve run $run_id on PR #$pr_number; the next sweep will try again."
                 done
 
-              ci=$(gh api "repos/$REPO/actions/runs?head_sha=$head_sha&per_page=100" \
-                --jq '[.workflow_runs[]
-                  | select(
-                      .name == "CI"
-                      and .event == "pull_request"
-                      and .status == "completed"
-                      and (.conclusion == "success" or .conclusion == "failure")
-                    )
-                  ] | sort_by(.created_at) | last // empty | [.id, .conclusion, .updated_at] | @tsv')
-              if [ -z "$ci" ]; then
-                # A conflicting pull request has no merge ref for GitHub to build, so a
-                # `pull_request` CI workflow can never run on that head: refs/pull/N/merge is a
-                # 404 for as long as the conflict lasts. Waiting for a verdict that cannot arrive
-                # deadlocks the belt, because resolving the conflict is the gate's own job. Fall
-                # back to the branch's last verdict so the gate runs; it stays on the remediation
-                # path and cannot merge on a stale conclusion.
-                conflicting_head=false
-                mergeable_now=$(mergeable_state "$pr_number")
-                if [ "$mergeable_now" = "CONFLICTING" ]; then
-                  conflicting_head=true
-                  ci=$(gh api "repos/$REPO/actions/runs?branch=$branch&per_page=100" \
-                    --jq '[.workflow_runs[]
-                      | select(
-                          .name == "CI"
-                          and .event == "pull_request"
-                          and .status == "completed"
-                          and (.conclusion == "success" or .conclusion == "failure")
-                        )
-                      ] | sort_by(.created_at) | last // empty | [.id, .conclusion, .updated_at] | @tsv')
+              if ! ci="$(gate_ci "$pr_number" "$head_sha" "$branch")"; then
+                # A pull request opened with the workflow token raises no events, so its CI may never
+                # start at all (FR-069). Warning about it every hour is a message nobody reads and a pull
+                # request nobody looks at, so after the wait it becomes a review: the label is what a
+                # person sees. The comment is written once, keyed on its own marker, because the belt runs
+                # hourly for ever.
+                opened_at=$(gh pr view "$pr_number" --repo "$REPO" --json createdAt --jq '.createdAt' 2>/dev/null || echo '')
+                waited=0
+                if [ -n "$opened_at" ]; then
+                  opened_epoch=$(date -u -d "$opened_at" +%s 2>/dev/null || echo 0)
+                  now_epoch=$(date -u +%s)
+                  [ "$opened_epoch" -gt 0 ] && waited=$(( (now_epoch - opened_epoch) / 60 ))
                 fi
-                if [ -z "$ci" ] && [ "${conflicting_head:-false}" = true ]; then
-                  # CI has never completed on this branch and cannot while it conflicts, so the
-                  # gate goes in with no CI result to resolve the conflict, instead of the pull
-                  # request being handed to a person as "no CI run" (FR-108; loopscope #213,
-                  # #214 and #231, 21/11/2026). The head commit's date stands in for the CI time.
-                  ci="$(gh api "repos/$REPO/commits/$head_sha" --jq '"none\tunknown\t" + .commit.committer.date')"
-                  echo "PR #$pr_number conflicts and CI has never run on it; dispatching the gate to resolve the conflict."
-                fi
-                if [ -z "$ci" ]; then
-                  # A pull request opened with the workflow token raises no events, so its CI
-                  # may never start at all (FR-069). Warning about it every hour is a message
-                  # nobody reads and a pull request nobody looks at, so after the wait it
-                  # becomes a review: the label is what a person sees. The comment is written
-                  # once, keyed on its own marker, because the belt runs hourly for ever.
-                  opened_at=$(gh pr view "$pr_number" --repo "$REPO" --json createdAt --jq '.createdAt' 2>/dev/null || echo '')
-                  waited=0
-                  if [ -n "$opened_at" ]; then
-                    opened_epoch=$(date -u -d "$opened_at" +%s 2>/dev/null || echo 0)
-                    now_epoch=$(date -u +%s)
-                    [ "$opened_epoch" -gt 0 ] && waited=$(( (now_epoch - opened_epoch) / 60 ))
-                  fi
 
-                  if [ "$waited" -lt "${CI_WAIT_MINUTES:-45}" ]; then
-                    echo "PR #$pr_number head $head_sha has no completed $CI_WORKFLOW_NAME run yet (${waited}m of ${CI_WAIT_MINUTES:-45}m); the belt will look again."
-                    continue
-                  fi
-
-                  marker='<!-- no-ci-run -->'
-                  already=$(gh api "repos/$REPO/issues/$pr_number/comments?per_page=100" --paginate \
-                    --jq ".[] | select(.body | contains(\"$marker\")) | .id" 2>/dev/null | grep -c . || true)
-                  if [ "${already:-0}" -eq 0 ]; then
-                    body="${marker}"$'\n\n'"No ${CI_WORKFLOW_NAME} run has appeared on this pull request head after ${waited} minutes, so the merge gate has nothing to read and cannot decide anything."$'\n\n'"A pull request opened with the workflow token raises no events, which is the usual cause. The remedy is the framework App-token trigger: an empty commit pushed with the App identity, which is an event the forge does deliver. See the consumer skill, section: When no CI run appears on a bot pull request."
-                    gh pr comment "$pr_number" --repo "$REPO" --body "$body"
-                  fi
-                  if [ -n "$linked_issue" ]; then
-                    gh issue edit "$linked_issue" --repo "$REPO" --add-label "$REVIEW_LABEL" >/dev/null 2>&1 || true
-                  fi
-                  echo "::warning::PR #$pr_number head $head_sha has no completed $CI_WORKFLOW_NAME run after ${waited}m; handed to a human."
+                if [ "$waited" -lt "${CI_WAIT_MINUTES:-45}" ]; then
+                  echo "PR #$pr_number head $head_sha has no completed $CI_WORKFLOW_NAME run yet (${waited}m of ${CI_WAIT_MINUTES:-45}m); the belt will look again."
                   continue
                 fi
-                echo "PR #$pr_number conflicts, so CI cannot run on $head_sha at all; gating on the branch's last verdict."
+
+                marker='<!-- no-ci-run -->'
+                already=$(gh api "repos/$REPO/issues/$pr_number/comments?per_page=100" --paginate \
+                  --jq ".[] | select(.body | contains(\"$marker\")) | .id" 2>/dev/null | grep -c . || true)
+                if [ "${already:-0}" -eq 0 ]; then
+                  body="${marker}"$'\n\n'"No ${CI_WORKFLOW_NAME} run has appeared on this pull request head after ${waited} minutes, so the merge gate has nothing to read and cannot decide anything."$'\n\n'"A pull request opened with the workflow token raises no events, which is the usual cause. The remedy is the framework App-token trigger: an empty commit pushed with the App identity, which is an event the forge does deliver. See the consumer skill, section: When no CI run appears on a bot pull request."
+                  gh pr comment "$pr_number" --repo "$REPO" --body "$body"
+                fi
+                # Every issue the pull request carries. This read an unset variable until WF-13, which
+                # `set -u` turned into the end of the whole sweep for the first such pull request.
+                while IFS= read -r carried_issue; do
+                  [ -n "$carried_issue" ] || continue
+                  gh issue edit "$carried_issue" --repo "$REPO" --add-label "$REVIEW_LABEL" >/dev/null 2>&1 || true
+                done < <(pr_issues "$pr_number")
+                echo "::warning::PR #$pr_number head $head_sha has no completed $CI_WORKFLOW_NAME run after ${waited}m; handed to a human."
+                continue
               fi
 
               IFS=$'\t' read -r ci_run_id ci_conclusion ci_finished <<<"$ci"
-              # A conflicting head with no CI anywhere carries no run (FR-108).
-              [ "$ci_run_id" != none ] || ci_run_id=""
-
-              # A verdict is a comment carrying BOTH the gate marker and a `**Verdict:**`
-              # line; progress comments and failed attempts deliberately carry neither
-              # matching pair, so a crashed or OOM-killed gate never masks a PR from
-              # later sweeps. A recorded verdict only counts when it is NEWER than the
-              # latest CI run; the old existence check made the gate one-shot per PR.
-              # Attempts are failed gates (the attempt marker) since this CI verdict.
-              latest_verdict=$(gh api "repos/$REPO/issues/$pr_number/comments?per_page=100" --paginate \
-                --jq '.[] | select((.body | contains("<!-- agent-merge-gate -->")) and (.body | contains("**Verdict:**"))) | .created_at' | sort | tail -n 1)
-              # Every issue this pull request carries, not the first of them. A promotion under
-              # `env-promotion` carries the set that merged into the stage below, so a budget
-              # counted against one of them is a fraction of the budget the gate is meant to have,
-              # and a verdict recorded on another of them would not be seen at all (FR-056).
-              carried_issues="$(pr_issues "$pr_number")"
-              while IFS= read -r linked_issue; do
-                [ -n "$linked_issue" ] || continue
-                issue_verdict=$(gh api "repos/$REPO/issues/$linked_issue/comments?per_page=100" --paginate \
-                  --jq '.[] | select((.body | contains("<!-- agent-merge-gate -->")) and (.body | contains("**Verdict:**"))) | .created_at' | sort | tail -n 1)
-                if [ -n "$issue_verdict" ] && { [ -z "$latest_verdict" ] || [ "$issue_verdict" \> "$latest_verdict" ]; }; then
-                  latest_verdict="$issue_verdict"
-                fi
-              done <<< "$carried_issues"
-              if [ -n "$latest_verdict" ] && [ "$latest_verdict" \> "$ci_finished" ]; then
-                echo "Merge gate verdict ($latest_verdict) is newer than CI ($ci_finished) for PR #$pr_number, skipping"
-                continue
-              fi
-
-              attempts=$(gh api "repos/$REPO/issues/$pr_number/comments?per_page=100" --paginate \
-                --jq '.[] | select(.body | contains("<!-- agent-merge-gate-attempt -->")) | select(.created_at > "'"$ci_finished"'") | .id' | grep -c . || true)
-              while IFS= read -r linked_issue; do
-                [ -n "$linked_issue" ] || continue
-                issue_attempts=$(gh api "repos/$REPO/issues/$linked_issue/comments?per_page=100" --paginate \
-                  --jq '.[] | select(.body | contains("<!-- agent-merge-gate-attempt -->")) | select(.created_at > "'"$ci_finished"'") | .id' | grep -c . || true)
-                attempts=$((attempts + issue_attempts))
-              done <<< "$carried_issues"
-              if [ "$attempts" -ge 6 ]; then
-                echo "PR #$pr_number already consumed $attempts gate attempts on this CI verdict, parking for review"
-                continue
-              fi
-              if gate_is_live "$pr_number"; then
-                echo "PR #$pr_number: a merge-gate run is already live; not dispatching another."
-                continue
-              fi
-
-              echo "Dispatching Merge Gate for PR #$pr_number ($ci_conclusion, run $ci_run_id, attempt $((attempts + 1)) of 6)"
-              gh api "repos/$REPO/actions/workflows/work-router.yml/dispatches" \
-                --method POST \
-                -f ref="$DEFAULT_BRANCH" \
-                -f "inputs[operation]=merge-gate" \
-                -f "inputs[pr-number]=$pr_number" \
-                -f "inputs[ci-conclusion]=$ci_conclusion" \
-                -f "inputs[ci-run-id]=$ci_run_id" \
-                -f "inputs[attempts_so_far]=$attempts"
+              dispatch_gate_if_due "$pr_number" "$ci_run_id" "$ci_conclusion" "$ci_finished"
             done
       - name: Record the outcome
         if: always()
