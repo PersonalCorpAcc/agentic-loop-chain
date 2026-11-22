@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/check-merge-preconditions/check-merge-preconditions.sh. Profile digest: dee2c3b90207. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/check-merge-preconditions/check-merge-preconditions.sh. Profile digest: ede943dfa18d. Update with `workflows update --force`; consumer edits may be overwritten.
 #
 # What the forge says about this pull request before anything tries to merge it (FR-068).
 #

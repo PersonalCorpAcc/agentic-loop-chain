@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/verify-route-matrix/verify-route-matrix.sh. Profile digest: dee2c3b90207. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/verify-route-matrix/verify-route-matrix.sh. Profile digest: ede943dfa18d. Update with `workflows update --force`; consumer edits may be overwritten.
 # Exercise the router's real classifier. This sources classify-route.sh rather than
 # restating it, so a change to the route table cannot pass here by being copied twice.
 #
@@ -1426,6 +1426,40 @@ if [ -f "$IMPLEMENT_WORKER_MD" ]; then
   else
     FAIL=$((FAIL + 1))
     echo "FAIL: implement's terminal jobs leave queued work to the reconcile schedule alone" >&2
+  fi
+fi
+
+# A diff holding a terminal escape sequence reaches the agent: gh 2.97 refuses to print one
+# without --allow-escape-sequences, and the gate crashed on loopscope #348 (22/11/2026).
+for worker in "$MERGE_GATE_WORKER_MD" "${HERE}/../../workflows/agent-apply-review.md"; do
+  [ -f "$worker" ] || continue
+  if grep -q 'gh pr diff "\$PR" --repo "\$REPO" "\${diff_flags\[@\]}"' "$worker" &&
+    ! grep -q 'gh pr diff "\$PR" --repo "\$REPO" >' "$worker"; then
+    PASS=$((PASS + 1))
+  else
+    FAIL=$((FAIL + 1))
+    echo "FAIL: $(basename "$worker") fetches the diff without --allow-escape-sequences" >&2
+  fi
+done
+
+# Apply-review's push survives a merge of the target branch: gh-aw judges protected files
+# against the old head, the gate judges the net change (FR-120, loopscope #319).
+APPLY_REVIEW_MD="${HERE}/../../workflows/agent-apply-review.md"
+if [ -f "$APPLY_REVIEW_MD" ]; then
+  if awk '/^  push-to-pull-request-branch:/{p=1;next} p&&/^  [a-z]/{p=0} p&&/^    protected-files: allowed/{f=1} END{exit !f}' "$APPLY_REVIEW_MD"; then
+    PASS=$((PASS + 1))
+  else
+    FAIL=$((FAIL + 1))
+    echo "FAIL: apply-review's push refuses protected files a merge of the target brings in" >&2
+  fi
+  # After a pushed fix the person whose change request holds the gate is asked to look again
+  # (FR-121, loopscope #329).
+  if grep -q 'run: bash ./.github/actions/ask-for-re-review/ask-for-re-review.sh' "$APPLY_REVIEW_MD" &&
+    [ -f "${HERE}/../ask-for-re-review/ask-for-re-review.sh" ]; then
+    PASS=$((PASS + 1))
+  else
+    FAIL=$((FAIL + 1))
+    echo "FAIL: apply-review leaves a standing change request holding the gate unannounced" >&2
   fi
 fi
 

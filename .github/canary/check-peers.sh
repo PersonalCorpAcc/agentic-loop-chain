@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/templates/canary/check-peers.sh. Profile digest: dee2c3b90207. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/templates/canary/check-peers.sh. Profile digest: ede943dfa18d. Update with `workflows update --force`; consumer edits may be overwritten.
 #
 # The dead-man's switch (feature 007 APP-03). A canary whose cycle has stopped cannot say so:
 # the schedule was off, the workflow was never installed, Actions were disabled -- and the

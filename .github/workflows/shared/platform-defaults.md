@@ -1,5 +1,5 @@
 ---
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/workflows/shared/platform-defaults.md. Profile digest: dee2c3b90207. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/workflows/shared/platform-defaults.md. Profile digest: ede943dfa18d. Update with `workflows update --force`; consumer edits may be overwritten.
 description: Shared network and safe-output defaults for catalog agent workflows.
 
 network:
