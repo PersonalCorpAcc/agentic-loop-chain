@@ -315,6 +315,15 @@ jobs:
           route: refine
           subject: ${{ format('#{0}', inputs.issue-number) }}
           detail: "${{ job.status == 'success' && 'The issue was refined and its labels moved on.' || 'The refine conclusion did not finish; the step log says where it stopped.' }}"
+      # A run ending is an event GitHub always delivers; its schedules it does not (FR-116). So
+      # each terminal job starts the reconcile belt -- queued work, cleared blockers, retries --
+      # instead of leaving that to a cron that may not fire for hours.
+      - name: Pick up queued work
+        if: always()
+        uses: ./.github/actions/pick-up-queued-work
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          ref: ${{ github.event.repository.default_branch }}
   incomplete:
     needs: [activation, agent, safe_outputs, validate_output]
     if: >
@@ -386,6 +395,15 @@ jobs:
             ${{ env.INCOMPLETE_COMMENT }}
             ${{ needs.activation.outputs.daily_ai_credits_exceeded == 'true' && format('The agent did not start: this repository has used its daily AI-credit allowance ({0} of {1}; the `GH_AW_DEFAULT_MAX_DAILY_AI_CREDITS` repository variable sets it). Work resumes once the day''s usage is back under it; raise the variable to allow more.', needs.activation.outputs.daily_ai_credits_total_effective_tokens, needs.activation.outputs.daily_ai_credits_threshold) || '' }}
             [View this workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+      # A run ending is an event GitHub always delivers; its schedules it does not (FR-116). So
+      # each terminal job starts the reconcile belt -- queued work, cleared blockers, retries --
+      # instead of leaving that to a cron that may not fire for hours.
+      - name: Pick up queued work
+        if: always()
+        uses: ./.github/actions/pick-up-queued-work
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          ref: ${{ github.event.repository.default_branch }}
 
 if: inputs.issue-number != ''
 
