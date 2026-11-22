@@ -1,4 +1,4 @@
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/guard-branch-write/action.yml. Profile digest: dee2c3b90207. Update with workflows update --force; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/guard-branch-write/action.yml. Profile digest: ede943dfa18d. Update with workflows update --force; consumer edits may be overwritten.
 name: Guard branch write
 description: >
   Refuse to write a branch this loop does not name, or one it promotes into, cuts from,

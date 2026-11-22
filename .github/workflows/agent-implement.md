@@ -1,5 +1,5 @@
 ---
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/workflows/agent-implement.md. Profile digest: dee2c3b90207. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/workflows/agent-implement.md. Profile digest: ede943dfa18d. Update with `workflows update --force`; consumer edits may be overwritten.
 env:
   VERIFY_COMMANDS: "pnpm install --frozen-lockfile && pnpm run build && pnpm run test"
   REPO_RULES: "Install with the lockfile frozen; an install that resolves a different tree is not reproducing the change under review. Run scripts through pnpm rather than npx, or a second package manager's lockfile appears in the diff."
@@ -986,7 +986,9 @@ timeout-minutes: 90
      against `${{ env.BASE_BRANCH }}`. Its `body` summarises what changed and why, and ends with a
         `## Verification` section of exactly two lines: `Tested:` naming each command you ran in
      step 4 and its result, and `Not tested:` naming what you did not or could not verify and
-     why (write `nothing` only if that is true). A reviewer reads this before the diff, so do
+     why (write `nothing` only if that is true). When the only thing left is a live run against
+     an outside service your sandbox cannot reach -- the forge's API, a third-party service --
+     say exactly that, and name the test that exercises the behaviour against a stand-in. A reviewer reads this before the diff, so do
      not claim a check you did not run. Do not write `Closes #${{ inputs.issue-number }}` or
      any other closing keyword, and do not try to link the issue yourself: the loop writes
      that link after the pull request exists. Never write an `implement-issue` marker or any
