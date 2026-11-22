@@ -1341,6 +1341,27 @@ if [ -f "$PROMOTE_SH" ]; then
   fi
 fi
 
+# A run that ended for a reason that passes keeps its label and a marker, and the hourly belt
+# starts it again; an implement retry names the run it comes from, or the router drops it as a
+# duplicate of that run (FR-113; loopscope #164, #265, #268). Behaviour is tested in the
+# package (retry-pending.test.ts); this checks an install is wired for it.
+RETRY_OK=1
+[ -f "${HERE}/../retry-pending/retry-pending.sh" ] && [ -f "${HERE}/../retry-pending/classify-incomplete.sh" ] || RETRY_OK=0
+grep -q 'bash ./.github/actions/retry-pending/retry-pending.sh' "$ROUTER_YML" || RETRY_OK=0
+grep -q 'RETRY_OF: ${{ inputs.retry-of' "$ROUTER_YML" || RETRY_OK=0
+for worker in agent-implement agent-refine; do
+  file="${HERE}/../../workflows/${worker}.md"
+  [ -f "$file" ] || continue
+  grep -q 'retry-pending/classify-incomplete.sh' "$file" || RETRY_OK=0
+  grep -q '<!-- agent-retry-pending: ' "$file" || RETRY_OK=0
+done
+if [ "$RETRY_OK" -eq 1 ]; then
+  PASS=$((PASS + 1))
+else
+  FAIL=$((FAIL + 1))
+  echo "FAIL: incomplete runs are not retried: the belt's sweep, the classifier, a worker's marker or the router's retry-of exclusion is missing" >&2
+fi
+
 echo
 if [ "$FAIL" -eq 0 ]; then
   echo "Route matrix: ${PASS} passed"
