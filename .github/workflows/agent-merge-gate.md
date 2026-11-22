@@ -1,5 +1,5 @@
 ---
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/workflows/agent-merge-gate.md. Profile digest: dee2c3b90207. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/workflows/agent-merge-gate.md. Profile digest: ede943dfa18d. Update with `workflows update --force`; consumer edits may be overwritten.
 env:
   VERIFY_COMMANDS: "pnpm install --frozen-lockfile && pnpm run build && pnpm run test"
   REPO_RULES: "Install with the lockfile frozen; an install that resolves a different tree is not reproducing the change under review. Run scripts through pnpm rather than npx, or a second package manager's lockfile appears in the diff."
@@ -986,7 +986,12 @@ steps:
     run: |
       set -euo pipefail
       mkdir -p /tmp/gh-aw/agent
-      gh pr diff "$PR" --repo "$REPO" > /tmp/gh-aw/agent/diff.patch
+      # gh 2.97 refuses to print a diff holding a terminal escape sequence, so a pull request
+      # that adds one (a test stripping colour codes, loopscope #348) crashed this step. The file
+      # is read as text, not shown on a terminal: pass the flag wherever this gh offers it.
+      diff_flags=()
+      if gh pr diff --help 2>&1 | grep -q -- '--allow-escape-sequences'; then diff_flags=(--allow-escape-sequences); fi
+      gh pr diff "$PR" --repo "$REPO" "${diff_flags[@]}" > /tmp/gh-aw/agent/diff.patch
       gh pr view "$PR" --repo "$REPO" --json title,body,files,additions,deletions \
         > /tmp/gh-aw/agent/pr.json
 
@@ -1151,6 +1156,13 @@ timeout-minutes: 60
    removed assertions, skipped tests, lowered coverage bars, or deleted test files. Read the
    pull request's `## Verification` section too: a `Not tested:` line naming the behaviour this
    change exists for, or no section at all, is a ⚠️ to cite, not a pass.
+   One exception, because no run of this loop can close it: a `Not tested:` line that names only
+   a live run against an outside service -- the forge's own API, a third-party service -- that
+   the agent's sandbox has no credentials or network for. That is ✅ with the note "live run
+   outside the sandbox" when this diff's own tests exercise the behaviour against a stand-in
+   (a mocked client, a recorded response, a fake `gh`), and you have read those tests. It stays
+   ⚠️ when nothing in the diff exercises the behaviour, when the line also names something the
+   agent could have run, or when the issue's acceptance criteria ask for a live run.
 
    **Check 5 — CI/CD & Workflow files.** Does the diff change CI, CD, or workflow files?
    Flag changes to `.github/workflows/`, Dockerfiles, deployment scripts, or infrastructure
