@@ -113,6 +113,30 @@ latest_gate_verdict() {
   done | sort | tail -n 1
 }
 
+# The word of the newest terminal gate verdict (`approve`, `merge`, `review`, `remediated`), over
+# the same subjects as latest_gate_verdict, or nothing.
+latest_gate_verdict_word() {
+  local pr="$1" subject
+  {
+    printf '%s\n' "$pr"
+    pr_issues "$pr"
+  } | while IFS= read -r subject; do
+    [ -n "$subject" ] || continue
+    # shellcheck disable=SC2016 # $v is jq's, not the shell's
+    gh api "repos/$REPO/issues/$subject/comments?per_page=100" --paginate \
+      --jq '.[] | select(.body | contains("<!-- agent-merge-gate -->")) | (.body | capture("\\*\\*Verdict:\\*\\* *(?<word>[a-z]+)")?) as $v | select($v != null) | [.created_at, $v.word] | @tsv' 2>/dev/null || true
+  done | sort | tail -n 1 | cut -f2
+}
+
+# Whether the repository's auto-merge policy, as installed now, merges into this base unattended:
+# the same rule as the gate's own policy step. AUTO_MERGE_MODE and AUTO_MERGE_TARGETS are the
+# caller's, projected from the profile.
+policy_merges_unattended() {
+  local base="$1"
+  [ "${AUTO_MERGE_MODE:-off}" != off ] && [ -n "$base" ] || return 1
+  printf '%s\n' "${AUTO_MERGE_TARGETS:-}" | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | grep -qxF -- "$base"
+}
+
 # Failed gate attempts (the attempt marker) since a CI verdict's time, on the pull request and
 # every issue it carries: a budget counted against one of a promotion's issues is a fraction of
 # the budget the gate is meant to have (FR-056).
@@ -138,8 +162,17 @@ dispatch_gate_if_due() {
   # check made the gate one-shot per pull request.
   verdict="$(latest_gate_verdict "$pr")"
   if [ -n "$verdict" ] && [ "$verdict" \> "$ci_finished" ]; then
-    echo "PR #$pr: the gate's verdict ($verdict) is newer than CI ($ci_finished); not dispatching."
-    return 0
+    # Except a clean assessment left to a person under a policy that has since changed: once
+    # the base merges unattended, that pull request merges itself if the gate looks again, and
+    # nothing else will make it look (FR-109; loopscope 20/11/2026, after autoMerge.targets
+    # gained main, open promotions assessed before it waited for a person indefinitely).
+    if [ "$(latest_gate_verdict_word "$pr")" = approve ] &&
+      policy_merges_unattended "$(gh pr view "$pr" --repo "$REPO" --json baseRefName --jq '.baseRefName' 2>/dev/null || true)"; then
+      echo "PR #$pr: the gate approved it for a person to merge, and its base now merges unattended; re-assessing under the new policy."
+    else
+      echo "PR #$pr: the gate's verdict ($verdict) is newer than CI ($ci_finished); not dispatching."
+      return 0
+    fi
   fi
   attempts="$(gate_attempts_since "$pr" "$ci_finished")"
   if [ "${attempts:-0}" -ge "$MERGE_GATE_ATTEMPTS" ]; then
