@@ -1463,6 +1463,16 @@ if [ -f "$APPLY_REVIEW_MD" ]; then
   fi
 fi
 
+# A clean assessment left to a person is looked at again once its base merges unattended: the
+# sweep reads the installed policy, and both router sweeps hand it over (FR-109).
+if grep -q '^policy_merges_unattended()' "$SWEEP_SH" &&
+  [ "$(grep -c 'AUTO_MERGE_TARGETS: "' "$ROUTER_YML")" -ge 2 ]; then
+  PASS=$((PASS + 1))
+else
+  FAIL=$((FAIL + 1))
+  echo "FAIL: the merge-gate sweep never re-assesses an approval made under an older auto-merge policy" >&2
+fi
+
 echo
 if [ "$FAIL" -eq 0 ]; then
   echo "Route matrix: ${PASS} passed"
