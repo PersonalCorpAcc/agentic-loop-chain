@@ -407,6 +407,19 @@ max-ai-credits: 8000
 
 permissions: read-all
 
+# After gh-aw has ingested the agent's output and before it is uploaded for the handlers: rename
+# temporary IDs gh-aw would reject and drop children a half-finished run already filed, so a
+# split cannot lose its children to one bad name or file them twice (FR-114, loopscope #265).
+post-steps:
+  - name: Normalise a split's safe outputs
+    if: always()
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      PARENT: ${{ inputs.issue-number }}
+      SPLIT_PARENT_PREFIX: ${{ env.SPLIT_PARENT_PREFIX }}
+    run: bash ./.github/actions/normalise-split-output/normalise-split-output.sh
+
 steps:
   - name: Load the issue context for the agent
     uses: ./.github/actions/load-issue-context
@@ -552,14 +565,20 @@ timeout-minutes: 40
    a complete refined story in the same format you would have written for the whole, with its own
    acceptance criteria, its own tests section, and its own estimate of 5 or less. Never write a
    child estimated at 1: that is a fragment, so fold it into a sibling. Call `create_issue` once
-   per child, and in each child body include:
+   per child, in order, and give each a `temporary_id` of exactly `aw_child1`, `aw_child2`, and so
+   on: `aw_` and then 3 to 8 letters or digits is the only shape accepted, and a child with any
+   other ID is created without its links. In each child body include:
 
-   - the line `${{ env.SPLIT_PARENT_PREFIX }}N -->` naming the parent issue number
-   - a `Blocked by #M` line naming any sibling that must land first, when order genuinely matters
+   - the line `${{ env.SPLIT_PARENT_PREFIX }}${{ inputs.issue-number }} -->` naming the parent
+   - when order genuinely matters, a `Blocked by #aw_childK` line naming an *earlier* sibling,
+     and the same sibling in the item's `blocked_by` field (`blocked_by: "aw_childK"`). The
+     children have no numbers yet; each `#aw_childK` becomes the sibling's issue number when it
+     is created, which is why a child may only wait for one created before it.
 
    Then call `update_issue` on the parent, with `issue_number: ${{ inputs.issue-number }}`,
    replacing its body with a short summary of the whole
-   piece of work, the reason it was split, and a checklist linking every child. The parent keeps
+   piece of work, the reason it was split, and a checklist linking every child as `#aw_child1`,
+   `#aw_child2` and so on. The parent keeps
    its own honest estimate. Do not write acceptance criteria on the parent: the children own them.
 
    **If it genuinely does not split**, because the work is one indivisible change, keep it as a
