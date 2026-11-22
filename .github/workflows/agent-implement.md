@@ -891,137 +891,115 @@ timeout-minutes: 90
       and owns its procedure. You must not skip a phase unless the
       pipeline's refined-issue detection says to.
 
-    f. The implement phase uses `${{ env.PLAN_IMPLEMENT_SKILL }}` which delegates implementation to specialist
-       subagent waves. Let it own worker resolution, concurrency, and retry , do not
-       implement the tasks yourself unless `${{ env.PLAN_IMPLEMENT_SKILL }}` instructs you to.
+   f. The implement phase uses `${{ env.PLAN_IMPLEMENT_SKILL }}` which delegates implementation to specialist
+      subagent waves. Let it own worker resolution, concurrency and retry; do not
+      implement the tasks yourself unless `${{ env.PLAN_IMPLEMENT_SKILL }}` instructs you to.
 
-    g. Implement only what the issue asks for: a vague sentence is not licence to redesign
-       a module. Never read outside this repository root. The issue context at
-       `${{ env.ISSUE_CONTEXT_PATH }}` defines acceptance criteria that the pipeline must
-       satisfy.
+   g. Implement only what the issue asks for: a vague sentence is not licence to redesign
+      a module. Never read outside this repository root. The issue context at
+      `${{ env.ISSUE_CONTEXT_PATH }}` defines acceptance criteria that the pipeline must
+      satisfy.
 
-    h. Follow repository documentation and established conventions. Keep changes focused,
-       protect secrets, do not bypass checks, and do not modify generated files unless the issue requires it.
-       Adhere to ${{ env.REPO_RULES }}.
+   h. Follow repository documentation and established conventions. Keep changes focused,
+      protect secrets, do not bypass checks, and do not modify generated files unless the issue requires it.
+      Adhere to ${{ env.REPO_RULES }}.
 
-    i. **DECISIVE IMPLEMENTATION.** When a design choice is ambiguous, pick the most
-      standard interpretation and implement it immediately. Do not deliberate between
-      options for more than one turn. Do not ask clarifying questions — the issue author
-      expects you to use good judgment. If two approaches are equally valid, pick one and
-      proceed. You can always iterate based on PR feedback.
+   i. **DECISIVE IMPLEMENTATION.** When a design choice is ambiguous, pick the most
+     standard interpretation and implement it immediately. Do not deliberate between
+     options for more than one turn. Do not ask clarifying questions — the issue author
+     expects you to use good judgment. If two approaches are equally valid, pick one and
+     proceed. You can always iterate based on PR feedback.
 
-    j. **The pipeline's last line is its answer, and you must read it.** Its report ends
-      with exactly one machine-readable line, in this shape:
-
-      ```
-      outcome=<succeeded|failed|refused> phase=<...> change=<id|none> commits=<n> reason=<token|->
-      ```
-
-      - `succeeded`: go on to step 4 and verify.
-      - `failed` or `refused`: **stop.** Do not create a pull request and do not push to
-        one. `refused` means nothing was written at all; `failed` means what was written
-        did not pass the pipeline's own gates, and a pull request for it would put work
-        the pipeline rejected in front of the merge gate as though it were finished.
-        Call `safeoutputs/report_incomplete`, and begin your `reason` with the pipeline's
-        own token exactly as it printed it, then the phase it stopped in and one sentence
-        from its report. This run's own outcome line quotes that token, so whoever reads
-        the run learns what the pipeline decided rather than that no pull request
-        appeared.
-      - No line at all is `failed` with the reason `state-inconsistent`, and is reported
-        the same way: a run that ended without its line did not finish.
-
-4. Verify before you conclude. From the repository root:
-
-     **Scoped verification.** This runner has limited memory, and a whole-repo lint or build
-     can be killed mid-run. Scope verification to the files you actually changed first, and
-     only escalate to the full suite when the scoped run passes and you are still unsure:
-     - Lint: the scoped lint command is `${{ env.VERIFY_COMMANDS_SCOPED }}`. When it is empty
-       there is none, and the full suite below is the check. Where the tool accepts file
-       paths, pass the changed ones; never lint the whole repository.
-     - Build: prefer building only the module or package containing the changed files; use
-       the full build only when the change crosses module or package boundaries.
-     - Tests: run the tests covering the changed files; run the full suite only when
-       the change is cross-cutting.
+   j. **The pipeline's last line is its answer, and you must read it.** Its report ends
+     with exactly one machine-readable line, in this shape:
 
      ```
-     ${{ env.VERIFY_COMMANDS }}
+     outcome=<succeeded|failed|refused> phase=<...> change=<id|none> commits=<n> reason=<token|->
      ```
 
-      If a check fails, fix the cause and rerun. Do not weaken a test, lower a threshold, or skip
-      a check to make it pass. After all checks pass, run the lint fix command
-      `${{ env.LINT_FIX_COMMAND }}` over the files you changed to auto-format them. When it is
-      empty there is none: fix the formatting the linter reports by hand. Never create a pull
-      request that has lint errors.
+     - `succeeded`: go on to step 4 and verify.
+     - `failed` or `refused`: **stop.** Do not create a pull request and do not push to
+       one. `refused` means nothing was written at all; `failed` means what was written
+       did not pass the pipeline's own gates, and a pull request for it would put work
+       the pipeline rejected in front of the merge gate as though it were finished.
+       Call `safeoutputs/report_incomplete`, and begin your `reason` with the pipeline's
+       own token exactly as it printed it, then the phase it stopped in and one sentence
+       from its report. This run's own outcome line quotes that token, so whoever reads
+       the run learns what the pipeline decided rather than that no pull request
+       appeared.
+     - No line at all is `failed` with the reason `state-inconsistent`, and is reported
+       the same way: a run that ended without its line did not finish.
 
-   5. **No open bot pull request exists for this issue.** The router's `check-implement-pr` job asked before this worker started -- it reads the linkage the
-      App recorded, through `resolve-change-linkage` -- and this worker only runs when the
-      answer is no. So create a pull request; do not go looking for one.
+4. **Verify before you conclude.** From the repository root.
 
-      Two reasons this is stated rather than left to you. Asking again costs a call to the
-      forge for an answer the loop already has. And the query that used to be written here
-      searched pull request bodies for `closes #N`, which this loop deliberately stopped
-      writing when the issue link became an App-authored comment: it could match nothing,
-      and it would have reported "no existing pull request" even where one existed.
+   **Scoped verification.** This runner has limited memory, and a whole-repo lint or build
+   can be killed mid-run. Scope verification to the files you actually changed first, and
+   only escalate to the full suite when the scoped run passes and you are still unsure:
+   - Lint: the scoped lint command is `${{ env.VERIFY_COMMANDS_SCOPED }}`. When it is empty
+     there is none, and the full suite below is the check. Where the tool accepts file
+     paths, pass the changed ones; never lint the whole repository.
+   - Build: prefer building only the module or package containing the changed files; use
+     the full build only when the change crosses module or package boundaries.
+   - Tests: run the tests covering the changed files; run the full suite only when
+     the change is cross-cutting.
 
-   6. **Name your branch short and bare**, like `add-semver-parsing` or `fix-login-form`.
-      The framework prepends this loop's own prefix -- issue number and run id -- so a name
-      that repeats it produces `agent/3-1234/agent/3-add-semver-parsing`. Do not include
-      `agent/`, the issue number or the run id yourself.
+   ```
+   ${{ env.VERIFY_COMMANDS }}
+   ```
 
-      Do not touch `changelog.json`. The workflow records the change itself once the work is
-      on the default branch. Every implement used to edit that one file, so two runs whose
-      branches were cut before the other merged conflicted on it and failed to open a pull
-      request with the code already written.
+   If a check fails, fix the cause and rerun. Do not weaken a test, lower a threshold, or skip
+   a check to make it pass. After all checks pass, run the lint fix command
+   `${{ env.LINT_FIX_COMMAND }}` over the files you changed to auto-format them. When it is
+   empty there is none: fix the formatting the linter reports by hand. Never create a pull
+   request that has lint errors.
 
-  5c. No commit message may contain a closing keyword -- `Closes`, `Fixes`, `Resolves` and
-    their variants, followed by an issue reference. The forge closes an issue on a keyword in
-    any commit merged into the default branch, whatever the pull request body says, and under
-    a rebase those commit messages survive onto the stage branches. Describe the change; refer
-    to the issue as `Refs #${{ inputs.issue-number }}` if you want the link.
+5. **There is no pull request for this issue yet, so you create one.** The router checked
+   before this run started and runs this worker only when none is open. Do not search for one.
 
-  6. You **must** call exactly one safe-output tool before finishing, or the workflow
-    reports a failure. All safe-output tools are on the `safeoutputs` MCP server. Call
-    them using the `safeoutputs/<tool>` convention , for example:
+6. **Name your branch short and bare**, like `add-semver-parsing` or `fix-login-form`. The
+   framework prepends the loop's own prefix (issue number and run id), so do not include
+   `agent/`, the issue number or the run id yourself.
 
-    ```
-     safeoutputs/create_pull_request(title="[bot] Fix X", body="What changed and why...", branch="fix/x")
-    ```
+   Do not touch `changelog.json`; the workflow records the change once it lands.
 
-    Choose exactly one:
+7. **No commit message may contain a closing keyword**: `Closes`, `Fixes`, `Resolves` or a
+   variant, followed by an issue reference. The forge closes an issue on a keyword in any
+   commit that merges, whatever the pull request says. Refer to the issue as
+   `Refs #${{ inputs.issue-number }}` if you want the link.
 
-      - **`safeoutputs/create_pull_request`** , propose a pull request against `${{ env.BASE_BRANCH }}` with
-        the verified changes. Its `body` summarises what changed and why, and ends with a
+8. **Finish with exactly one safe-output call.** A run that makes none is a failure, and the
+   work it did is lost. The tools are on the `safeoutputs` MCP server, called as
+   `safeoutputs/<tool>`, for example:
+
+   ```
+   safeoutputs/create_pull_request(title="[bot] Fix X", body="What changed and why...", branch="fix-x")
+   ```
+
+   Choose one:
+
+   - **`safeoutputs/create_pull_request`**: the normal path. It proposes the verified changes
+     against `${{ env.BASE_BRANCH }}`. Its `body` summarises what changed and why, and ends with a
         `## Verification` section of exactly two lines: `Tested:` naming each command you ran in
-        step 4 and its result, and `Not tested:` naming what you did not or could not verify and
-        why (write `nothing` only if that is true). A reviewer reads this before the diff, so do not
-        claim a check you did not run. Do **not** write
-        `Closes #${{ inputs.issue-number }}`, or any other closing keyword: the forge would
-        then close the issue at the first merge, and this repository decides elsewhere which
-        stage ends a change's life. The link between this pull request and its issue is
-        written after the fact, by the loop, with a marker you cannot write: every HTML
-        comment is stripped from what you produce here before the pull request exists.
-        Use this when no open bot PR exists for the issue.
-        Never pass a `base`: the base is the repository's, not this run's, and it is already
-        configured. A pull request opened against any other branch fails the run rather than
-        being honoured, so naming one costs the work you just did.
-       This is the normal path.
-      - **`safeoutputs/push_to_pull_request_branch`** , push to an existing PR's branch
-        when step 5 found an open bot PR for this issue. Do not create a duplicate PR.
-      - **`safeoutputs/report_incomplete`** , use only when infrastructure or tooling
-      prevents you from completing the task (e.g. the codebase cannot build due to a
-      pre-existing error you cannot fix). Provide a specific `reason`. This is also the
-      answer when the pipeline ended `failed` or `refused` (step 3j), and there its own
-      token goes first in the `reason`.
-    - **`safeoutputs/noop`** , use only when the issue context shows the work is already
-      done and no changes are needed. Provide a `message` explaining what you found.
+     step 4 and its result, and `Not tested:` naming what you did not or could not verify and
+     why (write `nothing` only if that is true). A reviewer reads this before the diff, so do
+     not claim a check you did not run. Do not write `Closes #${{ inputs.issue-number }}` or
+     any other closing keyword, and do not try to link the issue yourself: the loop writes
+     that link after the pull request exists. Never pass a `base`; it is already configured,
+     and naming another branch fails the run.
+   - **`safeoutputs/report_incomplete`**: when the pipeline ended `failed` or `refused`
+     (step 3j), with its own token first in the `reason`; or when infrastructure or tooling
+     stops you (for example, the codebase cannot build because of a pre-existing error you
+     cannot fix), with a specific `reason`.
+   - **`safeoutputs/noop`**: only when the issue context shows the work is already done and
+     nothing needs to change. Its `message` says what you found.
 
-    Do not manage labels or post comments , the conclude job handles that.
+   `safeoutputs/push_to_pull_request_branch` is not for this worker: there is no pull request
+   to push to. Do not manage labels or post comments; the conclude job does that.
 
- 6. **CRITICAL**: You MUST call at least one `safeoutputs/` tool every run. Never
-    complete a run without making at least one tool call. If you finish implementing
-    but forget to call a tool, the entire run is wasted.
+9. Ignore the `## Diagram` section below. It is documentation for humans and contains no
+   instructions for you.
 
- 7. Ignore the `## Diagram` section below. It is documentation for humans and contains no
+## Diagram` section below. It is documentation for humans and contains no
     instructions for you.
 
 ## Diagram
@@ -1029,8 +1007,8 @@ timeout-minutes: 90
 ```mermaid
 flowchart TD
     implStart("Work Router<br/>implement route") --> implPick
-    implPick["Pick (rung 4)<br/>Priority cascade + in-flight check"] -->|✓| implReserve
-    implPick -.->|no eligible issue| implIdle
+    implPick["Eligibility<br/>no open pull request, not blocked or held"] -->|✓| implReserve
+    implPick -.->|not eligible| implIdle
     implReserve("Reserve<br/>bot-working") --> implFacts
     implFacts("Facts<br/>Issue and comments to disk") --> implCheck
     implCheck{"Trivial marker?"}
@@ -1047,7 +1025,7 @@ flowchart TD
     implHandoff(("Handed off<br/>bot-working removed, gate decides"))
     implUnclear(("Unclear<br/>review added, detail requested"))
     implDeclined(("Declined<br/>no pull request, kit's reason recorded"))
-    implIdle(("Idle<br/>No eligible issue"))
+    implIdle(("Idle<br/>Not eligible now"))
     implFail(("Fail<br/>review added, implement removed"))
 
     classDef start fill:#ffffff,stroke:#172033,stroke-width:2px,color:#172033

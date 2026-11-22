@@ -1003,41 +1003,50 @@ if [ "$RESCAN_OK" -eq 1 ]; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); fi
 # marker alone were progress notes and failed attempts, and the reconcile belt read every
 # one of them as final: a crashed or OOM-killed gate parked its pull request for the rest
 # of the night. Attempts are counted separately, capped, and reset by any new CI run.
+# Both dispatch paths -- the conflict sweep after a merge and the hourly reconcile belt --
+# decide this in one script they source (feature 007 WF-13), so these read that script and
+# check the router hands both paths to it.
 BELT_OK=1
-if ! grep -q 'agent-merge-gate-attempt' "$ROUTER_YML"; then
-  BELT_OK=0; echo "FAIL: router never counts gate attempts" >&2
+SWEEP_SH="${HERE}/../merge-gate-sweep/merge-gate-sweep.sh"
+if [ ! -f "$SWEEP_SH" ]; then
+  BELT_OK=0; echo "FAIL: the merge-gate sweep script is not installed beside the router's actions" >&2
+  SWEEP_SH=/dev/null
 fi
-if [ "$(grep -cF 'contains("<!-- agent-merge-gate -->")) and (.body | contains("**Verdict:**"))' "$ROUTER_YML")" -lt 4 ]; then
-  BELT_OK=0; echo "FAIL: verdict detection must pair the gate marker with a Verdict line in both dispatch paths" >&2
+if [ "$(grep -c '^ *\. "\$GITHUB_WORKSPACE/\.github/actions/merge-gate-sweep/merge-gate-sweep\.sh"$' "$ROUTER_YML")" -lt 2 ] ||
+  [ "$(grep -c 'ci="$(gate_ci "\$pr' "$ROUTER_YML")" -lt 2 ] ||
+  [ "$(grep -c 'dispatch_gate_if_due "\$pr' "$ROUTER_YML")" -lt 2 ]; then
+  BELT_OK=0; echo "FAIL: both dispatch paths must source the merge-gate sweep and decide through gate_ci and dispatch_gate_if_due" >&2
 fi
-if [ "$(grep -c 'attempts_so_far' "$ROUTER_YML")" -lt 2 ]; then
-  BELT_OK=0; echo "FAIL: dispatch sites must forward attempts_so_far" >&2
+if ! grep -q 'agent-merge-gate-attempt' "$SWEEP_SH"; then
+  BELT_OK=0; echo "FAIL: the merge-gate sweep never counts gate attempts" >&2
+fi
+if ! grep -qF 'contains("<!-- agent-merge-gate -->")) and (.body | contains("**Verdict:**"))' "$SWEEP_SH"; then
+  BELT_OK=0; echo "FAIL: verdict detection must pair the gate marker with a Verdict line" >&2
+fi
+if ! grep -q 'inputs\[attempts_so_far\]' "$SWEEP_SH"; then
+  BELT_OK=0; echo "FAIL: the dispatch must forward attempts_so_far" >&2
 fi
 # A second gate for a pull request whose gate is already queued or running reads the same CI
 # verdict and is cancelled by the single-slot merge-belt queue (two cancellations on 2026-09-06).
-if [ "$(grep -c 'a merge-gate run is already live' "$ROUTER_YML")" -lt 2 ]; then
-  BELT_OK=0; echo "FAIL: both dispatch paths must skip a pull request whose gate is already live" >&2
+if ! grep -q 'a merge-gate run is already live' "$SWEEP_SH"; then
+  BELT_OK=0; echo "FAIL: the dispatch must skip a pull request whose gate is already live" >&2
 fi
 # A conflicting pull request has no refs/pull/N/merge for GitHub to build, so a `pull_request`
 # CI workflow can never run on that head. Requiring a fresh verdict before dispatching deadlocks
-# the belt: only the gate resolves the conflict, and the gate never runs. Both paths fall back to
-# the branch's last verdict when, and only when, the pull request is conflicting.
-if [ "$(grep -c 'conflicts, so CI cannot run on' "$ROUTER_YML")" -lt 2 ]; then
+# the belt: only the gate resolves the conflict, and the gate never runs. The sweep falls back
+# to the branch's last verdict when, and only when, the pull request is conflicting.
+if ! grep -q 'conflicts, so CI cannot run on' "$SWEEP_SH"; then
   BELT_OK=0
-  echo "FAIL: both dispatch paths must gate a conflicting pull request that can never get fresh CI" >&2
+  echo "FAIL: the sweep must gate a conflicting pull request that can never get fresh CI" >&2
 fi
-# That fallback has to read the computed mergeable state. The REST boolean is null until GitHub
-# recomputes it, and stays null for a pull request nobody has opened recently, which is exactly
-# the stale conflicting pull request the fallback exists for: it never fired once in production.
-# The state has to be polled, not read once. GitHub computes mergeability on demand and the
-# first read answers UNKNOWN (or null through REST) while it works it out, so a single read
-# reports "not conflicting" for exactly the stale pull requests the fallback is for. Observed
-# twice in production: the fallback logged "no completed CI run" for a pull request that
-# `gh pr view` reported as CONFLICTING from a warm cache seconds later.
-if [ "$(grep -c 'mergeable_state()' "$ROUTER_YML")" -lt 2 ] ||
-  [ "$(grep -c 'mergeable_now=$(mergeable_state' "$ROUTER_YML")" -lt 2 ]; then
+# That fallback has to read the computed mergeable state, polled rather than read once:
+# GitHub computes mergeability on demand and the first read answers UNKNOWN (or null through
+# REST), so a single read reports "not conflicting" for exactly the stale pull requests the
+# fallback is for. Observed twice in production.
+if ! grep -q '^mergeable_state() {' "$SWEEP_SH" ||
+  ! grep -q '\[ "$(mergeable_state "$pr")" = "CONFLICTING" \]' "$SWEEP_SH"; then
   BELT_OK=0
-  echo "FAIL: both dispatch paths must poll the mergeable state; a single read answers UNKNOWN" >&2
+  echo "FAIL: the sweep must poll the mergeable state; a single read answers UNKNOWN" >&2
 fi
 if [ "$BELT_OK" -eq 1 ]; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); fi
 
