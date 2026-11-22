@@ -263,6 +263,14 @@ issues_behind() {
   for sha in "$@"; do
     while IFS= read -r pr; do
       [ -n "$pr" ] || continue
+      # Which commit each issue's change is, for the changelog: the caller passes commits
+      # oldest first, so the last line written for an issue is its newest commit. Written
+      # before the pull request is deduplicated, because a pull request of several commits
+      # names its issue once and its newest commit last.
+      if [ -n "${ISSUE_SHAS_FILE:-}" ]; then
+        issue="$(pr_issue "$pr")"
+        [ -z "$issue" ] || printf '%s %s\n' "$issue" "$sha" >> "$ISSUE_SHAS_FILE"
+      fi
       case " ${seen_prs} " in *" ${pr} "*) continue ;; esac
       seen_prs="${seen_prs} ${pr}"
       issue="$(pr_issue "$pr")"
@@ -290,7 +298,7 @@ issues_behind() {
 # containing it is an ancestor of every commit after it.
 promote_by_snapshot() {
   local index previous next soak_seconds eligible_sha eligible_pr merged_epoch age
-  local pr merged_at oid had_merge snapshot_branch short carried blocked blockers issue entry
+  local pr merged_at oid had_merge snapshot_branch short carried blocked blockers issue entry issue_shas issue_sha
   local -a commits issues
 
   for index in "${!stages[@]}"; do
@@ -411,7 +419,8 @@ promote_by_snapshot() {
       continue
     fi
 
-    mapfile -t issues < <(issues_behind "${commits[@]}")
+    issue_shas="$(mktemp)"
+    mapfile -t issues < <(ISSUE_SHAS_FILE="$issue_shas" issues_behind "${commits[@]}")
     if [ "${#issues[@]}" -eq 0 ]; then
       note "::warning::The ${#commits[@]} commit(s) ${previous} has ahead of ${next} belong to no issue this loop knows, so nothing would be labelled or closed when they land. Leaving ${next} to a person."
       skipped_because "no-eligible-change"
@@ -502,14 +511,30 @@ promote_by_snapshot() {
 
     git switch --detach "$eligible_sha" >/dev/null 2>&1
 
+    # The entries the last promotion left on `${next}` never came back down, so without this
+    # every promotion after the first conflicts on the changelog alone (loopscope #279). Only
+    # under `merge`, the one method that keeps the merge commit this makes.
+    if [ "${MERGE_METHOD:-rebase}" = merge ]; then
+      TARGET_REF="refs/remotes/origin/${next}" \
+        MAX_ENTRIES="${MAX_ENTRIES:-20}" \
+        GIT_IDENTITY="${GIT_IDENTITY:-$(git config user.name)}" \
+        bash "${GITHUB_ACTION_PATH}/../update-changelog/fold-target-changelog.sh" ||
+        note "::warning::${next}'s changelog could not be folded into the promotion head; the pull request may conflict on it."
+    fi
+
     # One changelog entry per carried issue, riding the head before the push, as under the
     # cherry-picking path: an entry pushed to the stage branch would be this route writing a
     # protected branch directly (FR-031). A changelog that cannot be written does not stop a
     # promotion; the record is not the change.
+    #
+    # Each entry names the issue's own commit, not HEAD: HEAD is the previous entry's commit
+    # (or the fold), so every entry used to read "Record #<the issue before>" and point at a
+    # changelog commit (loopscope's CHANGELOG.json, 21/11/2026).
     for issue in "${issues[@]}"; do
+      issue_sha="$(awk -v i="$issue" '$1 == i { sha = $2 } END { print sha }' "$issue_shas")"
       if ! STAGE="$next" \
         ISSUE_NUMBER="$issue" \
-        COMMIT_SHA="$(git rev-parse HEAD)" \
+        COMMIT_SHA="${issue_sha:-$eligible_sha}" \
         HEAD_BRANCH="" \
         MAX_ENTRIES="${MAX_ENTRIES:-20}" \
         GIT_IDENTITY="${GIT_IDENTITY:-$(git config user.name)}" \
