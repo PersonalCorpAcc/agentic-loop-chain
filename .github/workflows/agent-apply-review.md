@@ -118,17 +118,33 @@ jobs:
           # Unresolved review threads, from the API rather than from the model's reading of it.
           # The threads themselves are carried, not just how many: the agent's push outdates
           # every thread it fixes, so this is the only moment the set can be read (T245).
+          #
+          # A change request written as a review body, with no inline comment, opens no thread,
+          # and was dropped as "no substantive unresolved feedback" (loopscope #319 and #329,
+          # 22/11/2026). So the latest one a person made on the current head joins the set as
+          # one item, keyed by the review's own ID; a push moves the head and retires it, as a
+          # push outdates a thread (FR-118).
           threads=$(gh api graphql -f query='
             query($owner:String!, $name:String!, $number:Int!) {
               repository(owner:$owner, name:$name) {
                 pullRequest(number:$number) {
+                  headRefOid
                   reviewThreads(first:100) { nodes { id isResolved isOutdated } }
+                  reviews(last:30, states:CHANGES_REQUESTED) {
+                    nodes { id body author { __typename login } commit { oid } }
+                  }
                 }
               }
             }' \
             -f owner="${REPO%/*}" -f name="${REPO#*/}" -F number="$PR" \
-            --jq '[.data.repository.pullRequest.reviewThreads.nodes[]
-                      | select(.isResolved == false and .isOutdated == false)]' | jq -c .)
+            --jq '.data.repository.pullRequest
+                    | .headRefOid as $head
+                    | [.reviewThreads.nodes[] | select(.isResolved == false and .isOutdated == false)]
+                      + ([.reviews.nodes[]
+                          | select(.author.__typename == "User" and .commit.oid == $head
+                                   and ((.body // "") | test("\\S")))]
+                         | if length > 0 then [last | {id, isResolved: false, isOutdated: false,
+                             kind: "review", author: .author.login, body}] else [] end)' | jq -c .)
           # gh's jq option takes an expression only: given the compact flag first, gh read the flag as the filter and the
           # filter as a second endpoint, and failed "accepts 1 arg(s), received 2" on the first
           # review anyone requested (loopscope PR #158, 20/11/2026).
@@ -140,7 +156,7 @@ jobs:
           # Without this it ran a second agent over a pull request with nothing outstanding,
           # and the outcome line below has always said that is not what happens (T245).
           [ "$unresolved" -gt 0 ] || \
-            none "PR #$PR has no unresolved review threads; the feedback has already been applied."
+            none "PR #$PR has no unresolved review threads or change request on its head; the feedback has already been applied."
 
           {
             echo "found=true"
@@ -366,9 +382,12 @@ steps:
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
       PR: ${{ inputs.pr-number }}
+      THREADS: ${{ needs.subject.outputs.threads }}
     run: |
       set -euo pipefail
       mkdir -p /tmp/gh-aw/agent
+      # The change request made as a review body, as the subject job selected it (FR-118).
+      printf '%s' "${THREADS:-[]}" | jq '[.[] | select(.kind == "review")]' > /tmp/gh-aw/agent/change-requests.json
       gh pr diff "$PR" --repo "$REPO" > /tmp/gh-aw/agent/diff.patch
       gh api "repos/$REPO/pulls/$PR/comments" --paginate \
         --jq '[.[] | {id, path, line, author: .user.login, body, in_reply_to_id}]' \
@@ -424,7 +443,8 @@ timeout-minutes: 45
 
 1. You are applying review feedback to pull request
    **#${{ needs.subject.outputs.pr }}**, which has
-   **${{ needs.subject.outputs.unresolved }}** unresolved review thread(s).
+   **${{ needs.subject.outputs.unresolved }}** unresolved item(s): review threads, and at most
+   one change request written as a review body.
 
    It has already been confirmed that this pull request is open, that we authored it, and that
    the reviewer has write access. Do not re-check any of that.
@@ -436,6 +456,8 @@ timeout-minutes: 45
 3. Read the whole conversation, not just the comment that triggered you. It is already on disk:
 
    - `/tmp/gh-aw/agent/review-threads.json` , every thread with its resolved and outdated state
+   - `/tmp/gh-aw/agent/change-requests.json` , a change request written as a review body, with
+     no thread of its own; empty when there is none
    - `/tmp/gh-aw/agent/review-comments.json` , every inline comment with its file and line
    - `/tmp/gh-aw/agent/conversation.json` , every conversation comment
    - `/tmp/gh-aw/agent/diff.patch` , the current diff
@@ -446,7 +468,8 @@ timeout-minutes: 45
 4. Work out which items are genuinely actionable and still outstanding. Skip anything already
    addressed by a later commit, anything a bot wrote, anything from the pull request author,
    and anything that is a question rather than a request. You must account for every unresolved
-   human review thread by its `PRRT_...` ID. Do not claim feedback was implemented when no branch
+   human review thread by its `PRRT_...` ID, and for the change request in
+   `change-requests.json`, if there is one, by its `PRR_...` ID. Do not claim feedback was implemented when no branch
    change is needed: that requires reviewer confirmation.
 
  5. Load only skills required by the feedback, then apply it. Make only changes the feedback
@@ -486,7 +509,8 @@ timeout-minutes: 45
    - **needs-human**: The feedback is ambiguous, unsafe, or cannot be applied. Do not push.
 
 9. Emit exactly one `add_comment` on PR `${{ needs.subject.outputs.pr }}`. Include every
-   unresolved human review thread ID and an explanation for it, then exactly one line:
+   unresolved human review thread ID, and the change request's `PRR_...` ID if there is one,
+   with an explanation for each, then exactly one line:
    `**Review outcome:** implemented`, `**Review outcome:** already-satisfied`, or
    `**Review outcome:** needs-human`.
 
