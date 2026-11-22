@@ -1362,6 +1362,21 @@ else
   echo "FAIL: incomplete runs are not retried: the belt's sweep, the classifier, a worker's marker or the router's retry-of exclusion is missing" >&2
 fi
 
+# A split's safe outputs are normalised before the handlers read them: temporary IDs gh-aw would
+# reject are renamed and children a half-finished run filed are reused (FR-114, loopscope #265).
+# Behaviour is tested in the package (normalise-split-output.test.ts); this checks the wiring.
+REFINE_MD="${HERE}/../../workflows/agent-refine.md"
+if [ -f "$REFINE_MD" ]; then
+  if [ -f "${HERE}/../normalise-split-output/normalise-split-output.sh" ] &&
+    sed -n '/^post-steps:$/,/^steps:$/p' "$REFINE_MD" | grep -q 'normalise-split-output/normalise-split-output.sh' &&
+    grep -q 'reused_children' "${HERE}/../validate-refine-output/validate-refine-output.sh"; then
+    PASS=$((PASS + 1))
+  else
+    FAIL=$((FAIL + 1))
+    echo "FAIL: refine does not normalise a split before the handlers run, so one rejected temporary ID loses every child after the first" >&2
+  fi
+fi
+
 echo
 if [ "$FAIL" -eq 0 ]; then
   echo "Route matrix: ${PASS} passed"
