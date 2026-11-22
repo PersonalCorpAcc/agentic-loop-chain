@@ -1326,6 +1326,21 @@ for variable in $FOREIGN_CREDENTIAL_VARS; do
   fi
 done
 
+# A snapshot promotion folds the target stage's changelog into its head under `merge`, or every
+# promotion after the first conflicts on the changelog alone (loopscope #279, 22/11/2026). The
+# behaviour is tested in the package (promote-snapshot-changelog.test.ts); this checks an
+# install carries the script and the route calls it.
+PROMOTE_SH="${HERE}/../promote-change/promote-change.sh"
+if [ -f "$PROMOTE_SH" ]; then
+  if [ -f "${HERE}/../update-changelog/fold-target-changelog.sh" ] &&
+    grep -q 'update-changelog/fold-target-changelog.sh' "$PROMOTE_SH"; then
+    PASS=$((PASS + 1))
+  else
+    FAIL=$((FAIL + 1))
+    echo "FAIL: snapshot promotions do not fold the target's changelog, so each one after the first conflicts on it" >&2
+  fi
+fi
+
 echo
 if [ "$FAIL" -eq 0 ]; then
   echo "Route matrix: ${PASS} passed"
