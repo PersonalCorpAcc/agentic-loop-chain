@@ -20,7 +20,11 @@ env:
   SPLIT_CHILDREN_PREFIX: "<!-- split-into: "
   SPLIT_THRESHOLD: "8"
   MAX_SPLIT_CHILDREN: "6"
-  INCOMPLETE_COMMENT: "Automated refinement ended without an outcome. The refine label remains for a retry."
+  INCOMPLETE_COMMENT: "Automated refinement ended without an outcome, and not for a reason that passes on its own, so the issue is flagged for review."
+  # What an incomplete run is retried on (FR-113): a short run the provider did not refuse looks
+  # like an outage, and the provider's own refusal words say it is the account instead.
+  RETRY_UNDER_MINUTES: "6"
+  REFUSAL_SIGNATURE: "billing_error|credit balance is too low|authentication_failed|invalid api key"
   SAFE_OUTPUT_COMMENT_PREFIX: "Refinement update"
   ISSUE_CONTEXT_PATH: /tmp/gh-aw/agent/issue-context.json
   GH_AW_ALLOWED_BOTS: "personalcorpacc-agentic-loop[bot],github-actions[bot]"
@@ -324,6 +328,8 @@ jobs:
     permissions:
       contents: read
       issues: write
+      # the classifier reads the agent job's duration and log
+      actions: read
     steps:
       - name: Checkout workflow actions
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -333,19 +339,44 @@ jobs:
         with:
           client-id: ${{ secrets.BOT_APP_ID }}
           private-key: ${{ secrets.BOT_PRIVATE_KEY }}
+      # The daily AI-credit allowance and a provider outage pass on their own, so neither is a
+      # person's: the issue keeps `refine`, and the hourly sweep retries it (FR-113). This job
+      # used to add `review` and promise a retry that nothing made (loopscope #265 and #268).
+      - name: Classify the failure
+        id: classify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          UNDER_MINUTES: ${{ env.RETRY_UNDER_MINUTES }}
+          REFUSAL_SIGNATURE: ${{ env.REFUSAL_SIGNATURE }}
+          CREDITS_EXCEEDED: ${{ needs.activation.outputs.daily_ai_credits_exceeded || 'false' }}
+        run: bash ./.github/actions/retry-pending/classify-incomplete.sh
       - name: Release the issue
         uses: ./.github/actions/remove-issue-labels
         with:
           token: ${{ steps.app-token.outputs.token }}
           issue-number: ${{ inputs.issue-number }}
           labels: ${{ env.WORKING_LABEL }}
+      - name: Say the run will be retried
+        if: steps.classify.outputs.kind == 'credits' || steps.classify.outputs.kind == 'outage'
+        uses: ./.github/actions/create-issue-comment
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          issue-number: ${{ inputs.issue-number }}
+          body: |
+            <!-- agent-retry-pending: refine ${{ steps.classify.outputs.kind }} -->
+            ${{ steps.classify.outputs.kind == 'credits' && format('The agent did not start: this repository has used its daily AI-credit allowance ({0} of {1}; the `GH_AW_DEFAULT_MAX_DAILY_AI_CREDITS` repository variable sets it).', needs.activation.outputs.daily_ai_credits_total_effective_tokens, needs.activation.outputs.daily_ai_credits_threshold) || format('Refinement ended after {0} minutes without an outcome, which is what a provider outage looks like.', steps.classify.outputs.minutes) }} Nothing is wrong with the issue. It keeps `${{ env.REFINE_LABEL }}`, and the hourly sweep starts it again.
+            [View this workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
       - name: Flag for human review
+        if: steps.classify.outputs.kind != 'credits' && steps.classify.outputs.kind != 'outage'
         uses: ./.github/actions/add-issue-labels
         with:
           token: ${{ steps.app-token.outputs.token }}
           issue-number: ${{ inputs.issue-number }}
           labels: ${{ env.REVIEW_LABEL }}
       - name: Report missing refinement outcome
+        if: steps.classify.outputs.kind != 'credits' && steps.classify.outputs.kind != 'outage'
         uses: ./.github/actions/create-issue-comment
         with:
           token: ${{ steps.app-token.outputs.token }}
