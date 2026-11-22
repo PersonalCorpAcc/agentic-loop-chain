@@ -1,0 +1,50 @@
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/pick-up-queued-work/action.yml. Profile digest: dee2c3b90207. Update with workflows update --force; consumer edits may be overwritten.
+name: Pick up queued work
+description: >-
+  Start the router's reconcile belt now, as a run ends, rather than waiting for its schedule:
+  it starts queued implement work, re-dispatches issues whose blockers have closed, and retries
+  runs that ended for a reason that passes. Skipped when a reconcile run is already waiting to
+  start. A failed dispatch is a warning; the schedule is still the fallback.
+inputs:
+  token:
+    description: A token that can dispatch workflows (the App's), so the run it starts is attributed.
+    required: true
+  ref:
+    description: The ref to dispatch the router at. The repository's default branch.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Dispatch the reconcile belt unless one is already waiting
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+      env:
+        REF: ${{ inputs.ref }}
+      with:
+        github-token: ${{ inputs.token }}
+        script: |
+          // GitHub drops scheduled runs under load and gives no notice: on loopscope the hourly
+          // belt last fired at 06:56 and the ten-minute one at 08:33 on 22/11/2026, and five
+          // queued implement issues sat idle for an hour and a half. A run ending is an event
+          // that always happens, so each terminal job starts the belt itself.
+          const title = "dispatch: reconcile-bot-pr-runs";
+          // Only one that has not started counts. One already running may have read the queue
+          // before this run freed its slot, so another is dispatched and the router's
+          // concurrency group holds it until that one finishes.
+          for (const status of ["queued", "pending", "waiting", "requested"]) {
+            const { data } = await github.rest.actions.listWorkflowRuns({
+              ...context.repo, workflow_id: "work-router.yml", event: "workflow_dispatch", status, per_page: 50,
+            });
+            if (data.workflow_runs.some((run) => run.display_title === title)) {
+              core.info(`A reconcile run is already ${status}; it will pick up whatever is queued.`);
+              return;
+            }
+          }
+          try {
+            await github.rest.actions.createWorkflowDispatch({
+              ...context.repo, workflow_id: "work-router.yml", ref: process.env.REF,
+              inputs: { operation: "reconcile-bot-pr-runs" },
+            });
+            core.info("Dispatched the reconcile belt to pick up queued work.");
+          } catch (error) {
+            core.warning(`Could not dispatch the reconcile belt (${error.message}); its schedule is the fallback.`);
+          }

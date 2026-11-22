@@ -280,7 +280,7 @@ jobs:
           issue-number: ${{ inputs.issue-number }}
           labels: ${{ env.REVIEW_LABEL }}
   conclude:
-    needs: [agent, safe_outputs, reserve]
+    needs: [activation, agent, safe_outputs, reserve]
     if: >
       always() &&
       needs.agent.result == 'success' &&
@@ -290,7 +290,8 @@ jobs:
       contents: read
       issues: write
       pull-requests: write
-      # To read the agent job's log, which is where the kit's outcome line is.
+      # To read the agent job's log, where the kit's outcome line is when the agent did not
+      # repeat it in its structured output.
       actions: read
     steps:
       - name: Checkout workflow actions
@@ -410,14 +411,18 @@ jobs:
           sleep 60
           gh workflow run work-router.yml --repo "$REPO" --ref "$REF" \
             -f operation=reconcile-bot-pr-runs
-      # The kit ends its report with one machine-readable line and nothing carries it out
-      # of the container: `report_incomplete` has no output on the safe-outputs job, so the
-      # agent job's own log is the only place the reason survives. This is the same read
-      # the retry decision makes for a billing refusal, for the same reason.
-      #
-      # The pattern demands real values and the last match wins, because the prompt shows
-      # the line's shape and the prompt is printed into this same log: `phase=<...>` does
-      # not match `phase=[a-z]+`, so the template cannot be mistaken for an answer.
+      # The kit ends its report with one machine-readable line, and the agent repeats it at the
+      # start of `report_incomplete`'s reason. That item is in the agent artefact, read here the
+      # way refine's validate_output reads its own; the archived log is only the fallback, for an
+      # agent that did not repeat it (feature 007 WF-12). A missing artefact is not swallowed:
+      # the script names the source it read, and an unreadable outcome is still declined.
+      - name: Download the agent's structured output
+        id: agent-output
+        if: needs.safe_outputs.outputs.created_pr_number == ''
+        continue-on-error: true
+        uses: ./.github/actions/download-agent-output
+        with:
+          artifact-name: ${{ needs.activation.outputs.artifact_prefix }}agent
       - name: Read the pipeline's outcome line
         id: pipeline
         if: needs.safe_outputs.outputs.created_pr_number == ''
@@ -425,56 +430,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
-        run: |
-          set -euo pipefail
-          # A called workflow shares the caller's run id, so the agent job is in this run.
-          job_id=$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" \
-            --jq '[.jobs[] | select(.name | endswith("agent"))] | last | .id // empty')
-          line=""
-          # A job's log is archived after the job ends, and for a while the endpoint answers
-          # 404: read straight away, the kit's refusal came back empty and the run reported
-          # "no-action" with the issue still labelled implement (loopscope, 20/11/2026). So
-          # retry for two minutes, and say what went wrong rather than discarding it.
-          if [ -n "${job_id:-}" ]; then
-            for attempt in 1 2 3 4 5 6 7 8; do
-              if log=$(gh api "repos/$REPO/actions/jobs/${job_id}/logs" 2>&1); then
-                line=$(printf '%s' "$log" |
-                  grep -oE 'outcome=(succeeded|failed|refused) phase=[a-z]+ change=[^ ]+ commits=[0-9]+ reason=[a-z-]+' |
-                  tail -n 1 || true)
-                break
-              fi
-              echo "attempt ${attempt}: the agent job's log is not readable yet: $(printf '%s' "$log" | head -n 1)"
-              sleep 15
-            done
-          else
-            echo "No agent job was found in run ${RUN_ID}."
-          fi
-          outcome=""
-          phase=""
-          reason=""
-          declined=false
-          if [ -n "$line" ]; then
-            outcome="${line#outcome=}"
-            outcome="${outcome%% *}"
-            phase="${line#*phase=}"
-            phase="${phase%% *}"
-            reason="${line##*reason=}"
-            [ "$outcome" = succeeded ] || declined=true
-          else
-            # No pull request and no readable outcome is never a quiet success: the work did
-            # not happen, so a person is told, exactly as for a refusal.
-            outcome=unknown
-            phase=none
-            reason="no outcome line could be read"
-            declined=true
-          fi
-          {
-            echo "outcome=${outcome}"
-            echo "phase=${phase}"
-            echo "reason=${reason}"
-            echo "declined=${declined}"
-          } >> "$GITHUB_OUTPUT"
-          echo "The pipeline's outcome line: ${line:-<none printed>}"
+          OUTPUT_FILE: ${{ steps.agent-output.outputs.output-file }}
+        run: bash ./.github/actions/read-implement-outcome/read-implement-outcome.sh
       # A declined run hands the issue back: a comment saying why, `review` so a person sees
       # it, and `implement` removed so the issue stops looking queued. Without this a refusal
       # left the issue labelled implement with nothing said, indefinitely (20/11/2026).
@@ -486,7 +443,7 @@ jobs:
           issue-number: ${{ inputs.issue-number }}
           body: |
             <!-- agent-implement-declined -->
-            Implementation stopped without a pull request: `${{ steps.pipeline.outputs.outcome }}` in phase `${{ steps.pipeline.outputs.phase }}`, reason `${{ steps.pipeline.outputs.reason }}`.
+            Implementation stopped without a pull request: `${{ steps.pipeline.outputs.outcome }}` in phase `${{ steps.pipeline.outputs.phase }}`, reason `${{ steps.pipeline.outputs.reason }}`. The run's log has the agent's own explanation.
 
             The issue now carries `${{ env.REVIEW_LABEL }}` instead of `${{ env.IMPLEMENT_LABEL }}`. When whatever stopped it is resolved (a dependency merged, a question answered), add `${{ env.IMPLEMENT_LABEL }}` again to retry.
 
@@ -514,6 +471,15 @@ jobs:
           route: implement
           subject: ${{ format('#{0}', inputs.issue-number) }}
           detail: "${{ needs.safe_outputs.outputs.created_pr_number != '' && format('Opened pull request #{0} for this issue.', needs.safe_outputs.outputs.created_pr_number) || steps.pipeline.outputs.declined == 'true' && format('The pipeline stopped: {0} in phase {1}, reason {2}. No pull request was requested.', steps.pipeline.outputs.outcome, steps.pipeline.outputs.phase, steps.pipeline.outputs.reason) || 'The run produced no pull request for this issue.' }}"
+      # A run ending is an event GitHub always delivers; its schedules it does not (FR-116). So
+      # each terminal job starts the reconcile belt -- queued work, cleared blockers, retries --
+      # instead of leaving that to a cron that may not fire for hours.
+      - name: Pick up queued work
+        if: always()
+        uses: ./.github/actions/pick-up-queued-work
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          ref: ${{ github.event.repository.default_branch }}
   # Held for its blockers (X12). After the agent rather than before it, so gh-aw does not hoist it
   # into the agent's needs, where a skip would stop every implement run (worker-custom-jobs).
   # Releases the working label -- an issue must not look in progress with nothing running -- and
@@ -728,6 +694,15 @@ jobs:
             ${{ env.INCOMPLETE_COMMENT }}
             ${{ needs.activation.outputs.daily_ai_credits_exceeded == 'true' && format('The agent did not start: this repository has used its daily AI-credit allowance ({0} of {1}; the `GH_AW_DEFAULT_MAX_DAILY_AI_CREDITS` repository variable sets it). Work resumes once the day''s usage is back under it; raise the variable to allow more.', needs.activation.outputs.daily_ai_credits_total_effective_tokens, needs.activation.outputs.daily_ai_credits_threshold) || '' }}
             [View this workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+      # A run ending is an event GitHub always delivers; its schedules it does not (FR-116). So
+      # each terminal job starts the reconcile belt -- queued work, cleared blockers, retries --
+      # instead of leaving that to a cron that may not fire for hours.
+      - name: Pick up queued work
+        if: always()
+        uses: ./.github/actions/pick-up-queued-work
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          ref: ${{ github.event.repository.default_branch }}
   agent:
     needs: [eligibility]
     if: needs.eligibility.outputs.eligible == 'true' && needs.eligibility.outputs.duplicate != 'true'
@@ -952,10 +927,9 @@ timeout-minutes: 90
        did not pass the pipeline's own gates, and a pull request for it would put work
        the pipeline rejected in front of the merge gate as though it were finished.
        Call `safeoutputs/report_incomplete`, and begin your `reason` with the pipeline's
-       own token exactly as it printed it, then the phase it stopped in and one sentence
-       from its report. This run's own outcome line quotes that token, so whoever reads
-       the run learns what the pipeline decided rather than that no pull request
-       appeared.
+       whole outcome line exactly as it printed it, then one sentence from its report.
+       The workflow reads the outcome from that line, so whoever reads the run learns
+       what the pipeline decided rather than that no pull request appeared.
      - No line at all is `failed` with the reason `state-inconsistent`, and is reported
        the same way: a run that ended without its line did not finish.
 
@@ -1015,10 +989,11 @@ timeout-minutes: 90
      why (write `nothing` only if that is true). A reviewer reads this before the diff, so do
      not claim a check you did not run. Do not write `Closes #${{ inputs.issue-number }}` or
      any other closing keyword, and do not try to link the issue yourself: the loop writes
-     that link after the pull request exists. Never pass a `base`; it is already configured,
+     that link after the pull request exists. Never write an `implement-issue` marker or any
+     other HTML comment in the body, not even quoted. Never pass a `base`; it is already configured,
      and naming another branch fails the run.
    - **`safeoutputs/report_incomplete`**: when the pipeline ended `failed` or `refused`
-     (step 3j), with its own token first in the `reason`; or when infrastructure or tooling
+     (step 3j), with its whole outcome line first in the `reason`; or when infrastructure or tooling
      stops you (for example, the codebase cannot build because of a pre-existing error you
      cannot fix), with a specific `reason`.
    - **`safeoutputs/noop`**: only when the issue context shows the work is already done and
