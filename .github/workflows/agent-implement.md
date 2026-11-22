@@ -24,6 +24,10 @@ env:
   GIT_COMMITTER_EMAIL: "personalcorpacc-agentic-loop[bot]@users.noreply.github.com"
   IMPLEMENT_MARKER: "<!-- agent-implement -->"
   ATTEMPT_MARKER: "<!-- agent-implement-attempt -->"
+  # The local branch the agent works on, created before it starts (FR-115). The pull request
+  # is built from the local branch named in create_pull_request's `branch`, so the two must
+  # match; the forge branch is this name under the profile's prefix.
+  WORK_BRANCH: work
   # The model provider fails in bursts: the same model answers "not found" or 401 for a minute
   # and works again immediately after, and a run that dies that way used to burn the issue and
   # hand it to a human. Retry those, and give up on the fifth, which is an outage not a blip.
@@ -771,6 +775,18 @@ steps:
 # Pinned to the version the OpenCode import pins, and skipped when that import has already run
 # (FR-088, research R16).
 pre-agent-steps:
+  # The checkout leaves the agent on a local branch named after the base. gh-aw builds the pull
+  # request from the local branch the agent names in `branch`, and when none exists it counts
+  # commits since GITHUB_SHA -- the default branch's tip, which is not the base under a chain.
+  # So an agent that committed where it stood, as the prompt tells it to, had its work found
+  # nowhere: "No changes to commit - no commits found", twice, after 22 minutes of finished
+  # work (loopscope #290, 22/11/2026). Only agents that ignored the prompt and made a branch got
+  # a pull request. The branch is made here, deterministically, and the prompt names it (FR-115).
+  - name: Put the agent on its own work branch
+    run: |
+      set -euo pipefail
+      git switch -C "$WORK_BRANCH"
+      echo "Working on $(git branch --show-current) at $(git rev-parse --short HEAD)."
   - name: Install the specification tool the pipeline requires
     run: |
       set -euo pipefail
@@ -969,9 +985,11 @@ timeout-minutes: 90
 5. **There is no pull request for this issue yet, so you create one.** The router checked
    before this run started and runs this worker only when none is open. Do not search for one.
 
-6. **Name your branch short and bare**, like `add-semver-parsing` or `fix-login-form`. The
-   framework prepends the loop's own prefix (issue number and run id), so do not include
-   `agent/`, the issue number or the run id yourself.
+6. **You are on a branch named `${{ env.WORK_BRANCH }}`, made for this run.** Commit there and
+   nowhere else, and pass exactly `branch: "${{ env.WORK_BRANCH }}"` to `create_pull_request`:
+   the pull request is built from the local branch of that name, so any other name finds no
+   commits and the work is lost. The framework adds the loop's own prefix (issue number and run
+   id) on the forge.
 
    Do not touch `changelog.json`; the workflow records the change once it lands.
 
@@ -985,7 +1003,7 @@ timeout-minutes: 90
    `safeoutputs/<tool>`, for example:
 
    ```
-   safeoutputs/create_pull_request(title="[bot] Fix X", body="What changed and why...", branch="fix-x")
+   safeoutputs/create_pull_request(title="[bot] Fix X", body="What changed and why...", branch="${{ env.WORK_BRANCH }}")
    ```
 
    Choose one:
