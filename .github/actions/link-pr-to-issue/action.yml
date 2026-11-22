@@ -40,7 +40,9 @@ runs:
           sed -E 's/\b([Cc]lose[sd]?|CLOSE[SD]?|[Ff]ixe?[sd]?|FIXE?[SD]?|[Rr]esolve[sd]?|RESOLVE[SD]?)(:?[[:space:]]+)(#[0-9]+|https:\/\/[^[:space:]]+\/issues\/[0-9]+)/Refs\2\3/g')"
 
         marker="<!-- implement-issue: ${ISSUE_NUMBER} -->"
-        if printf '%s' "$neutralised" | grep -qF -- "$marker"; then
+        # Already there only on a line of its own: the same marker quoted in the agent's prose
+        # is not one, and every reader ignores it (resolve-pr-issue.sh marker_issues).
+        if printf '%s\n' "$neutralised" | tr -d '\r' | grep -qxE -- "[[:space:]]*${marker}[[:space:]]*"; then
           printf '%s\n' "$neutralised" > /tmp/pr-body.md
         else
           printf '%s\n\n%s\n' "$neutralised" "$marker" > /tmp/pr-body.md

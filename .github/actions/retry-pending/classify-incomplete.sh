@@ -30,9 +30,14 @@ fi
 # short outage looks like -- so this asks the log what the provider actually said, in that
 # provider's own words. The framework's own `http_400_response_error` and
 # `inference_access_error` outputs were both false for a 400 carrying `billing_error`.
+# A job log carries terminal colour codes, and a recent gh refuses to print such a response
+# without --allow-escape-sequences: every read failed with that, which read as "not archived
+# yet" and left no outcome at all (loopscope #293, 22/11/2026). An older gh has no such flag.
+log_flags=()
+if gh api --help 2>&1 | grep -q -- '--allow-escape-sequences'; then log_flags=(--allow-escape-sequences); fi
 billing=false
 if [ -n "${job_id:-}" ] && [ -n "${REFUSAL_SIGNATURE:-}" ] &&
-  gh api "repos/$REPO/actions/jobs/${job_id}/logs" 2>/dev/null | grep -qiE "${REFUSAL_SIGNATURE}"; then
+  gh api "${log_flags[@]}" "repos/$REPO/actions/jobs/${job_id}/logs" 2>/dev/null | grep -qiE "${REFUSAL_SIGNATURE}"; then
   billing=true
 fi
 
