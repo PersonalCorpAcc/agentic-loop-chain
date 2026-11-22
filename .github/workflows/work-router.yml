@@ -172,6 +172,11 @@ on:
         required: false
         type: string
         default: '0'
+      retry-of:
+        description: "The run this dispatch retries, which is still finishing and is not a duplicate (filled by the loop, not by humans)"
+        required: false
+        type: string
+        default: ''
       trigger-kind:
         description: "Audit trigger: scheduled or manual"
         required: false
@@ -460,6 +465,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           ISSUE_NUMBER: ${{ needs.classify.outputs.issue-number }}
+          # The run a retry comes from is still in progress while it dispatches -- its own
+          # incomplete job is the dispatcher -- so it is not a duplicate. Counting it dropped
+          # every outage retry (loopscope #164, 21/11/2026; FR-113).
+          RETRY_OF: ${{ inputs.retry-of || '' }}
         run: |
           set -euo pipefail
           # A refine-to-implement transition emits two label events (the implement label,
@@ -493,7 +502,7 @@ jobs:
           # as a duplicate of #80 to every other run.
           for st in in_progress queued; do
             dupes=$(gh api "repos/$REPO/actions/workflows/work-router.yml/runs?status=$st&per_page=100"               --jq "[.workflow_runs[]
-                | select(.id < $GITHUB_RUN_ID)
+                | select(.id < $GITHUB_RUN_ID and (.id | tostring) != \"${RETRY_OF}\")
                 | select(
                     ((.display_title | startswith(\"Working (Implement)\")) and ((.display_title | endswith(\"(#${ISSUE_NUMBER})\")) or (.display_title | endswith(\": #${ISSUE_NUMBER}\"))))
                     or
@@ -1481,6 +1490,15 @@ jobs:
                 -f ref="$DEFAULT_BRANCH" -f "inputs[operation]=implement" -f "inputs[issue-number]=$issue" ||
                 echo "::warning::Could not start #$issue; the next sweep will try again."
             done
+
+          # Runs that ended for a reason that passes -- the daily AI-credit allowance, a provider
+          # outage -- keep their route label and a marked comment, and are started again here
+          # once they have waited the retry window (FR-113). Nothing else ever did, so their
+          # comment promised a retry that never came (loopscope #265 and #268, 21/11/2026).
+          WORKING_LABEL=bot-working HOLD_LABEL="hold" \
+            RETRY_AFTER_MINUTES="6" \
+            RETRY_ATTEMPTS="5" \
+            bash ./.github/actions/retry-pending/retry-pending.sh
 
           gh api "repos/$REPO/pulls?state=open&per_page=100" |
             jq -r --arg repo "$REPO" '
