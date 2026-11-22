@@ -1,4 +1,4 @@
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/workflows/authorize-bot-work.yml. Profile digest: dee2c3b90207. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/workflows/authorize-bot-work.yml. Profile digest: ede943dfa18d. Update with `workflows update --force`; consumer edits may be overwritten.
 # Human adds a work label → validates permission → bot adds the working label
 # This ensures the bot is the actor for all agentic workflows.
 #

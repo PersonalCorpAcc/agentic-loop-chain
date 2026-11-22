@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/verify-composite-actions/verify-composite-actions.sh. Profile digest: dee2c3b90207. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/verify-composite-actions/verify-composite-actions.sh. Profile digest: ede943dfa18d. Update with `workflows update --force`; consumer edits may be overwritten.
 # Validate every local composite action manifest.
 #
 # The runner evaluates ${{ }} everywhere in an action.yml, including inside `description:`,

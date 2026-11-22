@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/check-test-integrity/check-test-integrity.sh. Profile digest: dee2c3b90207. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/check-test-integrity/check-test-integrity.sh. Profile digest: ede943dfa18d. Update with `workflows update --force`; consumer edits may be overwritten.
 # Report, one line each, the ways a change weakens the repository's tests: a test file deleted,
 # a test file renamed out of the test pattern, or a skip marker added to a test file.
 #
