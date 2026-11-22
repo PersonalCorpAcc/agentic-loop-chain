@@ -33,12 +33,24 @@ git rev-parse --verify --quiet "${TARGET_REF}^{commit}" >/dev/null || exit 0
 
 base="$(git merge-base HEAD "$TARGET_REF" 2>/dev/null || true)"
 [ -n "$base" ] || exit 0
+# What the target changed since the two parted, and of that, what the snapshot does not already
+# have. A file both sides changed to the same content -- a reinstall landed on every stage as its
+# own commit, which is how the loop is installed -- is not a divergence. Counting it was why the
+# fold never fired on loopscope #307 (22/11/2026): thirteen installed files had changed on main,
+# every one identical to the snapshot's, and the changelog alone differed.
 changed="$(git diff --name-only "$base" "$TARGET_REF")"
 [ -n "$changed" ] || exit 0
-if [ "$changed" != "$path" ]; then
-  echo "${TARGET_REF#refs/remotes/origin/} has changes the snapshot does not besides ${path}; leaving them to the pull request."
+missing=""
+while IFS= read -r file; do
+  [ -n "$file" ] && [ "$file" != "$path" ] || continue
+  git diff --quiet HEAD "$TARGET_REF" -- "$file" || missing="${missing} ${file}"
+done <<<"$changed"
+if [ -n "$missing" ]; then
+  echo "${TARGET_REF#refs/remotes/origin/} has changes the snapshot does not besides ${path} (${missing# }); leaving them to the pull request."
   exit 0
 fi
+case $'\n'"$changed"$'\n' in *$'\n'"$path"$'\n'*) ;; *) exit 0 ;; esac
+git diff --quiet HEAD "$TARGET_REF" -- "$path" && exit 0
 
 ours="$(git show "HEAD:${path}" 2>/dev/null || echo '{}')"
 theirs="$(git show "${TARGET_REF}:${path}" 2>/dev/null || echo '{}')"

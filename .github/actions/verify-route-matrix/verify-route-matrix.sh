@@ -1377,6 +1377,18 @@ if [ -f "$REFINE_MD" ]; then
   fi
 fi
 
+# The implement agent works on a branch made for it and names that branch in create_pull_request,
+# which builds the pull request from the local branch of that name (FR-115, loopscope #290).
+if [ -f "$IMPLEMENT_WORKER_MD" ]; then
+  if sed -n '/^pre-agent-steps:$/,/^safe-outputs:$/p' "$IMPLEMENT_WORKER_MD" | grep -q 'git switch -C "\$WORK_BRANCH"' &&
+    grep -qF 'branch: "${{ env.WORK_BRANCH }}"' "$IMPLEMENT_WORKER_MD"; then
+    PASS=$((PASS + 1))
+  else
+    FAIL=$((FAIL + 1))
+    echo "FAIL: the implement agent is not put on a named work branch, so under a chain its commits can be found nowhere" >&2
+  fi
+fi
+
 echo
 if [ "$FAIL" -eq 0 ]; then
   echo "Route matrix: ${PASS} passed"
