@@ -1389,6 +1389,46 @@ if [ -f "$IMPLEMENT_WORKER_MD" ]; then
   fi
 fi
 
+# Why implement opened no pull request is read from the agent's structured output first, and
+# its archived log only as a fallback (feature 007 WF-12, FR-073).
+OUTCOME_SH="${HERE}/../read-implement-outcome/read-implement-outcome.sh"
+if [ -f "$IMPLEMENT_WORKER_MD" ]; then
+  if grep -qF 'artifact-name: ${{ needs.activation.outputs.artifact_prefix }}agent' "$IMPLEMENT_WORKER_MD" &&
+    grep -qF 'bash ./.github/actions/read-implement-outcome/read-implement-outcome.sh' "$IMPLEMENT_WORKER_MD" &&
+    [ -f "$OUTCOME_SH" ] && grep -q 'select(.type == "report_incomplete")' "$OUTCOME_SH"; then
+    PASS=$((PASS + 1))
+  else
+    FAIL=$((FAIL + 1))
+    echo "FAIL: implement reads its outcome only by scraping the agent job's log" >&2
+  fi
+fi
+
+# A pull request's issue is a marker on a line of its own, never one quoted in prose (loopscope
+# PR #329, 22/11/2026).
+RESOLVE_SH="${HERE}/../resolve-pr-issue/resolve-pr-issue.sh"
+if [ -f "$RESOLVE_SH" ]; then
+  # shellcheck source=SCRIPTDIR/../resolve-pr-issue/resolve-pr-issue.sh
+  # shellcheck disable=SC2016 # the backticks are the quoted prose, not a substitution
+  if [ "$(. "$RESOLVE_SH"; printf 'See `<!-- implement-issue: 207 -->`.\n\n<!-- implement-issue: 318 -->\n' | marker_issues)" = 318 ]; then
+    PASS=$((PASS + 1))
+  else
+    FAIL=$((FAIL + 1))
+    echo "FAIL: a marker quoted in a pull request's prose is taken for the issue it belongs to" >&2
+  fi
+fi
+
+# A run ending starts the reconcile belt, so queued work does not wait on a schedule GitHub may
+# not fire (FR-116, loopscope 22/11/2026).
+if [ -f "$IMPLEMENT_WORKER_MD" ]; then
+  if [ "$(grep -c 'uses: ./.github/actions/pick-up-queued-work' "$IMPLEMENT_WORKER_MD")" -ge 2 ] &&
+    [ -f "${HERE}/../pick-up-queued-work/action.yml" ]; then
+    PASS=$((PASS + 1))
+  else
+    FAIL=$((FAIL + 1))
+    echo "FAIL: implement's terminal jobs leave queued work to the reconcile schedule alone" >&2
+  fi
+fi
+
 echo
 if [ "$FAIL" -eq 0 ]; then
   echo "Route matrix: ${PASS} passed"
