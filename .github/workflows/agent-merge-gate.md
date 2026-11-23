@@ -1023,6 +1023,8 @@ steps:
         echo "CI run ID unavailable, cannot fetch logs" > /tmp/gh-aw/agent/failed-logs.txt
       fi
 
+# Each run's OpenTelemetry GenAI spans -- duration, tokens, model, outcome; never prompt or
+# response content -- go to the profile's OTLP endpoint (feature 007 X14, FR-074).
 safe-outputs:
   # Path B. Without this, gh-aw's own safe_outputs job writes as well as the conclude job, and
   # it runs first: it pushed a flattened, single-parent commit with GITHUB_TOKEN while conclude
