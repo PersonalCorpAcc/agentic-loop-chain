@@ -363,6 +363,7 @@ runs-on-slim: ubuntu-24.04
 
 engine:
   id: claude
+  args: ["--settings", "/tmp/gh-aw/agent/claude-settings.json"]
   # The agent job's own concurrency group, per pull request. The compiler's default is one group per
   # workflow, which serialised this worker across the whole repository whatever the router
   # allowed; the router's caller job owns the real limit (review WF-06).
@@ -387,6 +388,19 @@ steps:
       token: ${{ github.token }}
       issue-number: ${{ needs.subject.outputs.issue }}
       output-path: ${{ env.ISSUE_CONTEXT_PATH }}
+  # Under an engine with a stop hook the session cannot finish while the verify command fails;
+  # it is refused three times at most, then may end, and the gate still checks CI (feature 007
+  # X10, FR-026). The settings file is the engine's; the hook is a managed script.
+  - name: Hand the verify command to the session's stop hook
+    env:
+      VERIFY: ${{ env.VERIFY_COMMANDS }}
+    run: |
+      set -euo pipefail
+      mkdir -p /tmp/gh-aw/agent
+      printf '%s\n' "$VERIFY" > /tmp/gh-aw/agent/verify-command
+      cat > /tmp/gh-aw/agent/claude-settings.json <<'JSON'
+      {"hooks":{"Stop":[{"hooks":[{"type":"command","command":"bash .github/actions/verify-on-stop/verify-on-stop.sh","timeout":1200}]}]}}
+      JSON
   - name: Fetch the whole review conversation and the diff
     env:
       GH_TOKEN: ${{ github.token }}
@@ -427,6 +441,8 @@ steps:
         --jq '.data.repository.pullRequest.reviewThreads.nodes' \
         > /tmp/gh-aw/agent/review-threads.json
 
+# Each run's OpenTelemetry GenAI spans -- duration, tokens, model, outcome; never prompt or
+# response content -- go to the profile's OTLP endpoint (feature 007 X14, FR-074).
 safe-outputs:
   # A failed run is already a red run. An issue per failure buries the real backlog
   # under noise nobody closes.
