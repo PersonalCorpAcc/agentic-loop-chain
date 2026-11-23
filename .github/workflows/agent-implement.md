@@ -1,5 +1,5 @@
 ---
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/workflows/agent-implement.md. Profile digest: ede943dfa18d. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/workflows/agent-implement.md. Profile digest: ebdd90dc5c5b. Update with `workflows update --force`; consumer edits may be overwritten.
 env:
   VERIFY_COMMANDS: "pnpm install --frozen-lockfile && pnpm run build && pnpm run test"
   REPO_RULES: "Install with the lockfile frozen; an install that resolves a different tree is not reproducing the change under review. Run scripts through pnpm rather than npx, or a second package manager's lockfile appears in the diff."

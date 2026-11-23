@@ -1,4 +1,4 @@
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/classify-route/action.yml. Profile digest: ede943dfa18d. Update with workflows update --force; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/classify-route/action.yml. Profile digest: ebdd90dc5c5b. Update with workflows update --force; consumer edits may be overwritten.
 name: Classify route
 description: Classify the triggering event into exactly one route, and resolve the issue a gated pull request closes.
 inputs:
@@ -27,6 +27,11 @@ outputs:
   merge-gate-attempts:
     description: Failed merge-gate attempts already made against this CI verdict.
     value: ${{ steps.classify.outputs.merge-gate-attempts }}
+  human-only:
+    description: >-
+      true when a merge-gate route is for a person's pull request only: the green-CI shadow
+      route (feature 007 X11, FR-027). The gate refuses a bot pull request it is sent this way.
+    value: ${{ steps.classify.outputs.human-only }}
   implement-attempts:
     description: Implement runs already made for this issue that died before producing an answer.
     value: ${{ steps.classify.outputs.implement-attempts }}
