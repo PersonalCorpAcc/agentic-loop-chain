@@ -1,5 +1,5 @@
 ---
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/workflows/agent-release.md. Profile digest: ebdd90dc5c5b. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/workflows/agent-release.md. Profile digest: ccaabc0b4a1d. Update with `workflows update --force`; consumer edits may be overwritten.
 env:
   GIT_AUTHOR_NAME: "personalcorpacc-agentic-loop[bot]"
   GIT_AUTHOR_EMAIL: "personalcorpacc-agentic-loop[bot]@users.noreply.github.com"
@@ -102,34 +102,7 @@ jobs:
         env:
           NEW_VERSION: ${{ steps.release.outputs.new_version }}
           GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          git config user.name "$GIT_AUTHOR_NAME"
-          git config user.email "$GIT_AUTHOR_EMAIL"
-
-          # The checkout persists no credentials, so GH_TOKEN reaches `gh` and not git, and
-          # the push fails with "could not read Username" after the notes have been written.
-          # Carried per command through git's own environment rather than written into the
-          # remote URL, which .git/config would keep and every later step would inherit
-          # (FR-067).
-          host="${GITHUB_SERVER_URL#https://}"
-          git remote set-url origin "https://${host}/${GITHUB_REPOSITORY}.git"
-          GIT_CONFIG_COUNT=1
-          GIT_CONFIG_KEY_0=http.extraheader
-          GIT_CONFIG_VALUE_0="Authorization: Basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')"
-          export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
-
-          if ! git diff --cached --quiet; then
-            git commit -m "chore(release): v${NEW_VERSION}"
-            # The version commit lands on the default branch, which an adopter's rules may
-            # protect against exactly this. A refusal here is the forge working, and it says
-            # which rule it was; a repository whose version source is the tag stages nothing
-            # and never reaches this line.
-            git push
-          fi
-          git tag "v${NEW_VERSION}"
-          git push origin "v${NEW_VERSION}"
-          echo "Tagged v${NEW_VERSION} and pushed."
+        run: bash ./.github/actions/cut-release/commit-tag-push.sh
       - name: Create GitHub Release
         if: env.VERSION_SOURCE != 'none'
         env:

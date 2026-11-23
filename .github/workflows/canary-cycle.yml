@@ -1,4 +1,4 @@
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/templates/canary/canary-cycle.yml. Profile digest: ebdd90dc5c5b. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/templates/canary/canary-cycle.yml. Profile digest: ccaabc0b4a1d. Update with `workflows update --force`; consumer edits may be overwritten.
 name: Canary cycle
 
 # The canary: once a day, one fixed trivial change carried by the loop from an issue to the
@@ -123,8 +123,10 @@ jobs:
         run: |
           set -euo pipefail
           marker="<!-- canary-failure -->"
-          open=$(gh issue list --repo "$REPO" --state open --author "app/${BOT_LOGIN%\[bot\]}" --limit 50 --json number,body \
-            --jq "[.[] | select((.body // \"\") | contains(\"${marker}\"))][0].number // empty")
+          # By the author's login in jq: `gh issue list --author app/<name>` returns nothing for an
+          # App's issues, so a green cycle never closed this issue and a red one opened another.
+          open=$(gh issue list --repo "$REPO" --state open --limit 100 --json number,body,author \
+            --jq "[.[] | select(.author.login == \"app/${BOT_LOGIN%\[bot\]}\" and ((.body // \"\") | contains(\"${marker}\")))][0].number // empty")
           if [ "$GREEN" = true ]; then
             if [ -n "$open" ]; then
               gh issue comment "$open" --repo "$REPO" --body "Green again: ${DETAIL} ([run](${RUN_URL}))"
@@ -160,13 +162,15 @@ jobs:
           ISSUE_TOKEN: ${{ steps.app-token-late.outputs.token }}
           REPO: ${{ github.repository }}
           BOT_LOGIN: "personalcorpacc-agentic-loop[bot]"
-          PEERS: "canary,release"
+          PEERS: "PersonalCorpAcc/agentic-loop-canary,PersonalCorpAcc/agentic-loop-release"
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
           marker="<!-- canary-peer-quiet -->"
-          open=$(GH_TOKEN="$ISSUE_TOKEN" gh issue list --repo "$REPO" --state open --author "app/${BOT_LOGIN%\[bot\]}" --limit 50 --json number,body \
-            --jq "[.[] | select((.body // \"\") | contains(\"${marker}\"))][0].number // empty")
+          # Matched on the author's login in jq: `gh issue list --author app/<name>` and `--app` both
+          # return nothing for an App's issues, so each quiet run opened another one (23/11/2026).
+          open=$(GH_TOKEN="$ISSUE_TOKEN" gh issue list --repo "$REPO" --state open --limit 100 --json number,body,author \
+            --jq "[.[] | select(.author.login == \"app/${BOT_LOGIN%\[bot\]}\" and ((.body // \"\") | contains(\"${marker}\")))][0].number // empty")
           # One issue, open while any peer is quiet and closed when they all cycle again.
           if quiet=$(GH_TOKEN="$PEER_TOKEN" bash .github/canary/check-peers.sh); then
             if [ -n "$open" ]; then

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/probe-model-credit/probe-model-credit.sh. Profile digest: ebdd90dc5c5b. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/probe-model-credit/probe-model-credit.sh. Profile digest: ccaabc0b4a1d. Update with `workflows update --force`; consumer edits may be overwritten.
 #
 # Will the account behind the model credential pay for a run? Spends one token to ask
 # (FR-087): a key with no credit answers every read-only endpoint happily and refuses only at

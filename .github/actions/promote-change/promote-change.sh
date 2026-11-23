@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/promote-change/promote-change.sh. Profile digest: ebdd90dc5c5b. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/promote-change/promote-change.sh. Profile digest: ccaabc0b4a1d. Update with `workflows update --force`; consumer edits may be overwritten.
 #
 # Move the changes that are ready one stage along the chain (FR-031).
 #
@@ -515,6 +515,14 @@ promote_by_snapshot() {
     # every promotion after the first conflicts on the changelog alone (loopscope #279). Only
     # under `merge`, the one method that keeps the merge commit this makes.
     if [ "${MERGE_METHOD:-rebase}" = merge ]; then
+      # First the loop's own install, which the stages take one pull request at a time, so a
+      # snapshot taken between two reinstalls conflicts on every compiled lock (loopscope #382,
+      # FR-129); it folds the changelog too when both differ. Then the changelog alone.
+      TARGET_REF="refs/remotes/origin/${next}" \
+        MAX_ENTRIES="${MAX_ENTRIES:-20}" \
+        GIT_IDENTITY="${GIT_IDENTITY:-$(git config user.name)}" \
+        bash "${GITHUB_ACTION_PATH}/fold-target-install.sh" ||
+        note "::warning::${next}'s loop install could not be folded into the promotion head; the pull request may conflict on it."
       TARGET_REF="refs/remotes/origin/${next}" \
         MAX_ENTRIES="${MAX_ENTRIES:-20}" \
         GIT_IDENTITY="${GIT_IDENTITY:-$(git config user.name)}" \
