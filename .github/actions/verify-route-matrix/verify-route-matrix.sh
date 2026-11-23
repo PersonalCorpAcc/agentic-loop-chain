@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/verify-route-matrix/verify-route-matrix.sh. Profile digest: ede943dfa18d. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/verify-route-matrix/verify-route-matrix.sh. Profile digest: ebdd90dc5c5b. Update with `workflows update --force`; consumer edits may be overwritten.
 # Exercise the router's real classifier. This sources classify-route.sh rather than
 # restating it, so a change to the route table cannot pass here by being copied twice.
 #
@@ -152,8 +152,23 @@ assert "merge-gate carries the failing CI conclusion" failure \
 assert "merge-gate carries the failing CI run id" 99 \
   "$(route_field ci-run-id EVENT=workflow_run RUN_PR_NUMBER=7 \
     RUN_CONCLUSION=failure RUN_ID=99)"
-assert_route "a green App CI run does not auto-trigger the gate" none \
-  EVENT=workflow_run RUN_PR_NUMBER=7 RUN_CONCLUSION=success RUN_ID=99
+# Shadow mode (feature 007 X11, FR-027): a green run on a person's pull request reaches the gate
+# too, for that person's pull request only. Off, a green run routes nowhere, as before.
+if [ "${SHADOW_HUMAN_PULL_REQUESTS:-false}" = "true" ]; then
+  assert_route "in shadow mode a green CI run on a pull request routes to the gate" merge-gate \
+    EVENT=workflow_run RUN_PR_NUMBER=7 RUN_CONCLUSION=success RUN_ID=99
+  assert "the shadow route is for a person's pull request only" true \
+    "$(route_field human-only EVENT=workflow_run RUN_PR_NUMBER=7 RUN_CONCLUSION=success RUN_ID=99)"
+  assert "the shadow route carries the green conclusion" success \
+    "$(route_field ci-conclusion EVENT=workflow_run RUN_PR_NUMBER=7 RUN_CONCLUSION=success RUN_ID=99)"
+  assert_route "in shadow mode a green CI run with no pull request routes nowhere" none \
+    EVENT=workflow_run RUN_PR_NUMBER= RUN_CONCLUSION=success RUN_ID=99
+else
+  assert_route "a green App CI run does not auto-trigger the gate" none \
+    EVENT=workflow_run RUN_PR_NUMBER=7 RUN_CONCLUSION=success RUN_ID=99
+fi
+assert "a failed CI run is gated whoever opened the pull request, not for people only" false \
+  "$(route_field human-only EVENT=workflow_run RUN_PR_NUMBER=7 RUN_CONCLUSION=failure RUN_ID=99)"
 assert_route "a cancelled App CI run does not auto-trigger the gate" none \
   EVENT=workflow_run RUN_PR_NUMBER=7 RUN_CONCLUSION=cancelled RUN_ID=99
 assert_route "a failed CI run with no pull request routes nowhere" none \
@@ -329,6 +344,104 @@ fi
   fi
 
 if [ "$GATE_POLICY_OK" -eq 1 ]; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); fi
+
+echo "── The gate in shadow changes nothing (feature 007 X11, FR-027) ──────────"
+
+# Advice on a person's pull request is one comment and nothing else. Every job that labels,
+# comments, merges or pushes must ask the subject's `advise` output first, and the advisory job
+# exists exactly when this install turned shadow mode on: the classifier's constant, the gate's
+# env and the job are three projections of one profile value.
+SHADOW_OK=1
+if [ -f "$MERGE_GATE_WORKER_MD" ]; then
+  gate_src="$(tr -d '\r' <"$MERGE_GATE_WORKER_MD")"
+  for job in conclude incomplete; do
+    block="$(sed -n "/^  ${job}:\$/,/^  [a-z_]*:\$/p" <<<"$gate_src")"
+    grep -q "needs.subject.outputs.advise != 'true'" <<<"$block" ||
+      { SHADOW_OK=0; echo "FAIL: the merge gate's ${job} job does not refuse advise mode, so advice on a person's pull request could write" >&2; }
+  done
+  for step in "Release the issue" "Flag human review" "Explain the merge hold" "Hand the conflict to a human" \
+    "Say why the conflict was not resolved" "Comment on issue - problems found, solving them"; do
+    # The whole name: "Release the issue" is also the start of review mode's "Release the issue
+    # for apply-review", which sits in conclude and is guarded with the job.
+    condition="$(grep -A 1 -x -F -e "      - name: ${step}" <<<"$gate_src" | grep -E '^ +if:' || true)"
+    [ -n "$condition" ] ||
+      { SHADOW_OK=0; echo "FAIL: the merge-gate step '${step}' is missing or has no if:, so nothing stops it writing on advice" >&2; }
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      case "$line" in
+        *"needs.subject.outputs.advise != 'true'"*) ;;
+        *) SHADOW_OK=0; echo "FAIL: the merge-gate step '${step}' writes without asking whether this run is advice" >&2 ;;
+      esac
+    done <<<"$condition"
+  done
+  installed_shadow="$(sed -n 's/^  SHADOW_HUMAN_PULL_REQUESTS: "\(.*\)"$/\1/p' <<<"$gate_src")"
+  [ "$installed_shadow" = "${SHADOW_HUMAN_PULL_REQUESTS:-}" ] ||
+    { SHADOW_OK=0; echo "FAIL: the gate says shadow mode is '${installed_shadow}' and the classifier '${SHADOW_HUMAN_PULL_REQUESTS:-}'; they were written from different profiles" >&2; }
+  if [ "${SHADOW_HUMAN_PULL_REQUESTS:-false}" = "true" ]; then
+    grep -q '^  advise:$' <<<"$gate_src" ||
+      { SHADOW_OK=0; echo "FAIL: shadow mode is on and the merge gate has no advise job, so a person's pull request is assessed and nothing is said" >&2; }
+    [ -f "${HERE}/../post-gate-advice/post-gate-advice.sh" ] ||
+      { SHADOW_OK=0; echo "FAIL: shadow mode is on and post-gate-advice.sh is not installed" >&2; }
+  elif grep -q '^  advise:$' <<<"$gate_src"; then
+    SHADOW_OK=0
+    echo "FAIL: shadow mode is off and the merge gate still carries its advise job" >&2
+  fi
+  grep -q "human-only: \${{ needs.classify.outputs.human-only" "$ROUTER_YML" ||
+    { SHADOW_OK=0; echo "FAIL: the router does not pass human-only to the gate, so a bot pull request's green run would be gated twice in shadow mode" >&2; }
+fi
+if [ "$SHADOW_OK" -eq 1 ]; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); fi
+
+echo "── The gate as a reviewer (feature 007 X08, FR-024) ──────────────────────"
+
+# Under `gate.mode: review` the gate never pushes: it requests changes as a review, apply-review
+# answers that one bot review, and the gate's own request never holds the gate. The installed
+# gate, apply-review and their scripts must agree on the mode and on the marker that tells the
+# gate's change request from a person's.
+REVIEW_MODE_OK=1
+APPLY_REVIEW_MD="${HERE}/../../workflows/agent-apply-review.md"
+if [ -f "$MERGE_GATE_WORKER_MD" ]; then
+  gate_src="$(tr -d '\r' <"$MERGE_GATE_WORKER_MD")"
+  gate_mode="$(sed -n 's/^  GATE_MODE: "\(.*\)"$/\1/p' <<<"$gate_src")"
+  gate_marker="$(sed -n 's/^  GATE_REVIEW_MARKER: "\(.*\)"$/\1/p' <<<"$gate_src")"
+  case "$gate_mode" in
+    fix | review) ;;
+    *) REVIEW_MODE_OK=0; echo "FAIL: the merge gate's GATE_MODE is '${gate_mode}', which is neither fix nor review" >&2 ;;
+  esac
+  # In either mode the gate's own change request must not hold it, or review mode deadlocks.
+  grep -q 'run: bash ./.github/actions/gate-review/review-blocked.sh' <<<"$gate_src" ||
+    { REVIEW_MODE_OK=0; echo "FAIL: the merge gate does not decide review_blocked with review-blocked.sh, so its own change request would hold every fix it asked for" >&2; }
+  if [ "$gate_mode" = review ]; then
+    for step in "Request the changes as a review" "Release the issue for apply-review" \
+      "Dismiss the gate's own change requests" "Decide the review-mode verdict"; do
+      grep -qF -e "- name: ${step}" <<<"$gate_src" ||
+        { REVIEW_MODE_OK=0; echo "FAIL: review mode is on and the merge gate has no '${step}' step" >&2; }
+    done
+    for script in review-blocked decide-review-outcome post-gate-review dismiss-gate-reviews; do
+      [ -f "${HERE}/../gate-review/${script}.sh" ] ||
+        { REVIEW_MODE_OK=0; echo "FAIL: review mode is on and gate-review/${script}.sh is not installed" >&2; }
+    done
+    if [ -f "$APPLY_REVIEW_MD" ]; then
+      apply_marker="$(tr -d '\r' <"$APPLY_REVIEW_MD" | sed -n 's/^  GATE_REVIEW_MARKER: "\(.*\)"$/\1/p')"
+      if [ -z "$gate_marker" ] || [ "$apply_marker" != "$gate_marker" ]; then
+        REVIEW_MODE_OK=0
+        echo "FAIL: the gate marks its change request '${gate_marker}' and apply-review looks for '${apply_marker}'; apply-review would never answer it" >&2
+      fi
+    else
+      REVIEW_MODE_OK=0
+      echo "FAIL: review mode is on and apply-review is not installed, so nothing would make the changes the gate requests" >&2
+    fi
+  # In fix mode the change-request step stays installed, because conclude reads its outcome,
+  # but it may only ever run under review: its guard names the mode.
+  elif grep -qF -e "- name: Request the changes as a review" <<<"$gate_src" &&
+    ! grep -qF -e "if: env.GATE_MODE == 'review' && needs.validate_output.outputs.outcome == 'changes'" <<<"$gate_src"; then
+    REVIEW_MODE_OK=0
+    echo "FAIL: the merge gate is in fix mode and its change-request step is not guarded by review mode" >&2
+  elif grep -qF -e "- name: Dismiss the gate's own change requests" <<<"$gate_src"; then
+    REVIEW_MODE_OK=0
+    echo "FAIL: the merge gate is in fix mode and still carries review mode's dismissal step" >&2
+  fi
+fi
+if [ "$REVIEW_MODE_OK" -eq 1 ]; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); fi
 
 echo "── Every scheduled route, both ends (research R7) ────────────────────────"
 

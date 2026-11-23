@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/read-implement-outcome/read-implement-outcome.sh. Profile digest: ede943dfa18d. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/read-implement-outcome/read-implement-outcome.sh. Profile digest: ebdd90dc5c5b. Update with `workflows update --force`; consumer edits may be overwritten.
 #
 # Read why an implement run opened no pull request (feature 007 WF-12, FR-073).
 #
