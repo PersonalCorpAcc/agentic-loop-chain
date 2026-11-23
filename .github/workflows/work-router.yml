@@ -277,76 +277,21 @@ jobs:
       trusted: ${{ steps.check.outputs.trusted }}
       is_outside_collaborator: ${{ steps.check.outputs.is_outside_collaborator }}
     steps:
+      - name: Check out the actions this job uses
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            .github/actions/authorize-actor
+            .github/actions/record-outcome
       - name: Check the actor can start an agent
         id: check
         env:
           GH_TOKEN: ${{ github.token }}
           ACTOR: ${{ github.actor }}
           EVENT: ${{ github.event_name }}
-        run: |
-          set -euo pipefail
-
-          # Events with no human actor. `schedule` and `workflow_run` are the fleet triggering
-          # itself; `workflow_dispatch` is already restricted by GitHub to write and above.
-          case "$EVENT" in
-            schedule | workflow_run | workflow_dispatch)
-              echo "trusted=true" >> "$GITHUB_OUTPUT"
-              echo "is_outside_collaborator=false" >> "$GITHUB_OUTPUT"
-              echo "::notice::$EVENT has no untrusted actor."
-              exit 0
-              ;;
-          esac
-
-          # The bot App owns Safe Outputs. Its label changes must be able to
-          # start the follow-on worker, even though GitHub does not report it
-          # as a repository collaborator.
-          if [ "$ACTOR" = "github-actions[bot]" ] || [ "$ACTOR" = "personalcorpacc-agentic-loop[bot]" ]; then
-            echo "trusted=true" >> "$GITHUB_OUTPUT"
-            echo "is_outside_collaborator=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          permission=$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$ACTOR/permission" \
-            --jq '.permission' 2>/dev/null || echo "none")
-
-          # Check if the actor is an organization member. Outside collaborators can have
-          # write/maintain permission on a repo without being org members. Triage is for
-          # outside collaborators only — a non-member with write access is still outside.
-          org=$(echo "$GITHUB_REPOSITORY" | cut -d/ -f1)
-          is_member=false
-          if gh api "orgs/$org/members/$ACTOR" >/dev/null 2>&1; then
-            is_member=true
-          fi
-
-          case "$permission" in
-            admin | maintain | write)
-              if [ "$is_member" = "true" ]; then
-                echo "trusted=true" >> "$GITHUB_OUTPUT"
-                echo "is_outside_collaborator=false" >> "$GITHUB_OUTPUT"
-                echo "::notice::$ACTOR has $permission permission and is an org member."
-              else
-                echo "trusted=true" >> "$GITHUB_OUTPUT"
-                echo "is_outside_collaborator=true" >> "$GITHUB_OUTPUT"
-                echo "::notice::$ACTOR has $permission permission but is NOT an org member (outside collaborator). Triage route eligible."
-              fi
-              ;;
-            read)
-              echo "trusted=false" >> "$GITHUB_OUTPUT"
-              echo "is_outside_collaborator=true" >> "$GITHUB_OUTPUT"
-              echo "::notice::$ACTOR is an outside collaborator (read permission). Triage route eligible."
-              ;;
-            *)
-              echo "trusted=false" >> "$GITHUB_OUTPUT"
-              echo "is_outside_collaborator=false" >> "$GITHUB_OUTPUT"
-              echo "::notice::$ACTOR has '$permission' permission on this repository. No agent will run."
-              ;;
-          esac
-      - name: Check out the outcome action
-        if: always()
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          sparse-checkout: .github/actions/record-outcome
+          BOT_LOGIN: "personalcorpacc-agentic-loop[bot]"
+        run: bash ./.github/actions/authorize-actor/authorize-actor.sh
       - name: Record the outcome
         if: always()
         uses: ./.github/actions/record-outcome
@@ -469,81 +414,7 @@ jobs:
           # incomplete job is the dispatcher -- so it is not a duplicate. Counting it dropped
           # every outage retry (loopscope #164, 21/11/2026; FR-113).
           RETRY_OF: ${{ inputs.retry-of || '' }}
-        run: |
-          set -euo pipefail
-          # A refine-to-implement transition emits two label events (the implement label,
-          # then the worker re-adding bot-working) and each one classifies to implement.
-          # The older router run wins: a younger run that finds an older live implement
-          # route for the same issue skips instead of queueing a duplicate worker. Only
-          # bot-actor titles are counted, so a human's "waiting for bot-working" run can
-          # never block the real one.
-          #
-          # This is a pre-filter, not the guarantee. It reads run titles, which are
-          # presentation: they carry the issue's own text, they change when somebody edits
-          # `run-name`, and listing runs is eventually consistent, so two runs starting in the
-          # same second can both see nothing. What it buys is a skip before a runner starts,
-          # which nothing inside the worker can do.
-          #
-          # The guarantee is in the worker. `eligibility` runs while the concurrency group is
-          # held and asks the App's own record whether this issue already has an open pull
-          # request; a group permits one running job at a time, so by then the answer is true
-          # if it is going to be. That is GitHub's own advice -- a concurrency group for the
-          # exclusion, an idempotent check for the rest -- and it is why no custom lock is
-          # needed here.
-          #
-          # Both run-name shapes, because there are two: an issue event renders
-          # `Working (Implement): <title> (#8)` and a dispatch renders
-          # `Working (Implement): #8`. Matching only the first made a dispatched implement
-          # invisible to this filter, and to itself, which produced two agent runs and two
-          # pull requests for issue #5 on 17/09/2026 (#6 and #7).
-          #
-          # Anchored to the end of the title rather than found anywhere in it: a title
-          # carries the issue's own text, so an issue named "Fix #80 handling" would read
-          # as a duplicate of #80 to every other run.
-          for st in in_progress queued; do
-            dupes=$(gh api "repos/$REPO/actions/workflows/work-router.yml/runs?status=$st&per_page=100"               --jq "[.workflow_runs[]
-                | select(.id < $GITHUB_RUN_ID and (.id | tostring) != \"${RETRY_OF}\")
-                | select(
-                    ((.display_title | startswith(\"Working (Implement)\")) and ((.display_title | endswith(\"(#${ISSUE_NUMBER})\")) or (.display_title | endswith(\": #${ISSUE_NUMBER}\"))))
-                    or
-                    ((.display_title | contains(\"implement label on #${ISSUE_NUMBER} by\")) and (.display_title | endswith(\"[bot]\")))
-                  )
-              ] | length" 2>/dev/null || echo 0)
-            if [ "${dupes:-0}" -gt 0 ]; then
-              echo "has-open-pr=true" >> "$GITHUB_OUTPUT"
-              echo "::notice::An older router run is already implementing #$ISSUE_NUMBER; skipping the duplicate."
-              exit 0
-            fi
-          done
-
-          # Linkage first: the App records the pull request it opened, so the duplicate
-          # check is an exact lookup rather than a text search (FR-064). Only an OPEN pull
-          # request blocks; a merged or closed one means a re-implement is legitimate. A
-          # body-sourced answer is honoured here and said out loud: the cost of believing a
-          # marker somebody typed is one skipped implement on their own issue, and the cost
-          # of ignoring an uncorroborated one is a duplicate pull request.
-          if [ -n "$MARKER_PR" ]; then
-            state=$(gh pr view "$MARKER_PR" --repo "$REPO" --json state --jq '.state' 2>/dev/null || echo GONE)
-            if [ "$state" = "OPEN" ]; then
-              echo "has-open-pr=true" >> "$GITHUB_OUTPUT"
-              echo "::notice::Issue #$ISSUE_NUMBER is linked (source: $MARKER_SOURCE) to open PR #$MARKER_PR. Skipping duplicate implement."
-              exit 0
-            fi
-            echo "Linked PR #$MARKER_PR is $state; a fresh implement is allowed."
-          fi
-
-          existing=$(gh pr list --repo "$REPO" --state open --json number,author,body \
-            --jq "[.[]
-              | select(.author.login | startswith(\"app/\") or endswith(\"[bot]\"))
-              | (.body | ascii_downcase) as \$body
-              | select(\$body | contains(\"close #${ISSUE_NUMBER}\") or contains(\"closes #${ISSUE_NUMBER}\") or contains(\"closed #${ISSUE_NUMBER}\") or contains(\"fix #${ISSUE_NUMBER}\") or contains(\"fixes #${ISSUE_NUMBER}\") or contains(\"fixed #${ISSUE_NUMBER}\") or contains(\"resolve #${ISSUE_NUMBER}\") or contains(\"resolves #${ISSUE_NUMBER}\") or contains(\"resolved #${ISSUE_NUMBER}\"))
-            ] | length")
-          if [ "$existing" -gt 0 ]; then
-            echo "has-open-pr=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::Issue #$ISSUE_NUMBER already has an open bot PR. Skipping implement to prevent duplicates."
-          else
-            echo "has-open-pr=false" >> "$GITHUB_OUTPUT"
-          fi
+        run: bash ./.github/actions/find-duplicate-implement/find-duplicate-implement.sh
       - name: Record the outcome
         if: always()
         uses: ./.github/actions/record-outcome
@@ -1118,8 +989,8 @@ jobs:
       HOTFIX_LABEL: "hotfix"
       TRUNK: "dev"
     steps:
-      # Unconditional, and first. The decide step below sources `resolve-pr-issue.sh` out of
-      # the workspace, so the workspace has to exist before it runs -- this checkout used to
+      # Unconditional, and first. The decide step below runs a script out of the workspace
+      # that sources `resolve-pr-issue.sh`, so the workspace has to exist before it runs -- this checkout used to
       # sit after it, conditioned on the decision it had not made yet, and the job failed on
       # every merge into a release branch with "No such file or directory". The route matrix
       # greps the router's text and cannot see step order; only a run shows it.
@@ -1135,43 +1006,7 @@ jobs:
           BASE_REF: ${{ needs.classify.outputs.pr-base }}
           PR: ${{ needs.classify.outputs.pr-number }}
           LINKED: ${{ needs.classify.outputs.linked-issue }}
-        run: |
-          set -euo pipefail
-          echo "carry=false" >> "$GITHUB_OUTPUT"
-
-          # A repository that cuts no release branches has no pattern at all: the optional
-          # token takes its own line with it, so this is read defensively.
-          if [ -z "${RELEASE_PATTERN:-}" ]; then
-            echo "This repository cuts no release branches; nothing to carry back."
-            exit 0
-          fi
-          if ! printf '%s' "$BASE_REF" | grep -qE "${RELEASE_PATTERN}"; then
-            echo "${BASE_REF} is not a release branch; the trunk is where this change already is."
-            exit 0
-          fi
-
-          # shellcheck source=../actions/resolve-pr-issue/resolve-pr-issue.sh
-          . "$GITHUB_WORKSPACE/.github/actions/resolve-pr-issue/resolve-pr-issue.sh"
-          issue="$LINKED"
-          [ -n "$issue" ] || issue="$(pr_issue "$PR")"
-          if [ -z "$issue" ]; then
-            echo "::notice::PR #${PR} merged into ${BASE_REF} but belongs to no issue this loop knows; nothing to carry back."
-            exit 0
-          fi
-
-          # Without the label this is ordinary work on a release branch, and FR-055 says the
-          # route only records which branch it reached -- which stage-merge has already done.
-          if ! gh issue view "$issue" --repo "$REPO" --json labels --jq '[.labels[].name]' |
-            jq -e --arg name "$HOTFIX_LABEL" 'index($name)' >/dev/null 2>&1; then
-            echo "Issue #${issue} does not carry ${HOTFIX_LABEL}; ${BASE_REF} is where this change belongs."
-            exit 0
-          fi
-
-          {
-            echo "carry=true"
-            echo "issue=${issue}"
-          } >> "$GITHUB_OUTPUT"
-          echo "Issue #${issue} is a hotfix on ${BASE_REF}; carrying it back to ${TRUNK}."
+        run: bash ./.github/actions/carry-hotfix-back/decide-hotfix-back.sh
       - name: Generate App token for the carry-back
         if: steps.decide.outputs.carry == 'true'
         id: app-token
@@ -1196,45 +1031,7 @@ jobs:
           ISSUE: ${{ steps.decide.outputs.issue }}
           GIT_IDENTITY: "personalcorpacc-agentic-loop[bot]"
           TITLE_PREFIX: "[bot] "
-        run: |
-          set -euo pipefail
-          git config user.name "$GIT_IDENTITY"
-          git config user.email "${GIT_IDENTITY}@users.noreply.github.com"
-
-          merged="$(gh api "repos/$REPO/pulls/$PR" --jq '.merge_commit_sha // empty')"
-          [ -n "$merged" ] || { echo "::warning::PR #${PR} reports no merge commit; nothing to carry back."; exit 0; }
-          # Fetched before it is named: a checkout brings down what the run needs and nothing
-          # else, and handing an unfetched sha to git exits 128.
-          git fetch --no-tags --quiet origin "$merged" "$TRUNK" || true
-
-          if git merge-base --is-ancestor "$merged" "origin/${TRUNK}" 2>/dev/null; then
-            echo "${TRUNK} already has ${merged:0:8}; nothing to carry back."
-            exit 0
-          fi
-
-          branch="hotfix-back/${ISSUE}-${GITHUB_RUN_ID}"
-          git switch --detach "origin/${TRUNK}"
-          git switch -c "$branch"
-          if ! git cherry-pick -m 1 "$merged" >/dev/null 2>&1 && ! git cherry-pick "$merged" >/dev/null 2>&1; then
-            files="$(git diff --name-only --diff-filter=U 2>/dev/null | head -n 20 | tr '\n' ' ')"
-            git cherry-pick --abort >/dev/null 2>&1 || true
-            echo "::warning::The hotfix on ${BASE_REF} does not apply cleanly onto ${TRUNK} (${files:-files not recorded}); nothing was pushed and it needs a person."
-            exit 0
-          fi
-
-          git push origin "HEAD:refs/heads/${branch}"
-          # The same issue marker the original carried, so every reader that asks which issue
-          # a pull request belongs to gets the same answer for both halves of the hotfix.
-          # Built with printf rather than written inline: a body line starting at column
-          # zero ends the YAML literal block this step is written in, and the router then
-          # fails to parse at install time rather than here.
-          body="$(printf '%s\n\n%s\n' \
-            "Carries the hotfix that landed on \`${BASE_REF}\` in #${PR} back to \`${TRUNK}\`, so the next release branch is cut with it." \
-            "<!-- implement-issue: ${ISSUE} -->")"
-          gh pr create --repo "$REPO" --base "$TRUNK" --head "$branch" \
-            --title "${TITLE_PREFIX}carry hotfix #${ISSUE} back to ${TRUNK}" \
-            --body "$body"
-          echo "carried=true" >> "$GITHUB_OUTPUT"
+        run: bash ./.github/actions/carry-hotfix-back/carry-hotfix-back.sh
       - name: Record the outcome
         if: always() && steps.decide.outputs.carry == 'true'
         uses: ./.github/actions/record-outcome
@@ -1777,39 +1574,7 @@ jobs:
           PROBE: "anthropic-messages"
           MODEL: "claude-sonnet-5"
           REFUSAL_SIGNATURE: "billing_error|credit balance is too low|authentication_failed|invalid api key"
-        run: |
-          set -uo pipefail
-          if [ -z "${PROBE:-}" ]; then
-            echo "::notice::No credit probe is characterised for this repository's engine, so whether the account will pay is unknown until an agent runs. The engine table names a probe only for the shapes this project has watched succeed and fail."
-            exit 0
-          fi
-          if [ -z "${CREDENTIAL:-}" ]; then
-            echo "::error::The model credential secret is empty, so no agent can run at all."
-            exit 1
-          fi
-
-          case "$PROBE" in
-            anthropic-messages)
-              answer="$(curl --silent --show-error --max-time 30 \
-                -H "x-api-key: ${CREDENTIAL}" \
-                -H "anthropic-version: 2023-06-01" \
-                -H "content-type: application/json" \
-                -d "{\"model\":\"${MODEL}\",\"max_tokens\":1,\"messages\":[{\"role\":\"user\",\"content\":\".\"}]}" \
-                https://api.anthropic.com/v1/messages 2>&1)"
-              ;;
-            *)
-              echo "::warning::${PROBE} is named as this engine's credit probe and this router does not implement it; treating the account as unknown."
-              exit 0
-              ;;
-          esac
-
-          # The status is not the answer: a refusal is a 400 like several other things, and
-          # the provider's own words are what the implement worker stops on too.
-          if printf '%s' "$answer" | grep -qiE "${REFUSAL_SIGNATURE}"; then
-            echo "::error::The account behind this repository's model credential will not pay: the provider answered with its refusal. Nothing else here is wrong, and no agent can run until it is topped up."
-            exit 1
-          fi
-          echo "::notice::The model credential answered, so the account will pay for a run."
+        run: bash ./.github/actions/probe-model-credit/probe-model-credit.sh
       - name: Record the outcome
         if: always()
         uses: ./.github/actions/record-outcome

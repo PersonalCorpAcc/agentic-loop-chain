@@ -106,49 +106,17 @@ jobs:
       blocked_by: ${{ steps.check.outputs.blocked_by }}
       duplicate: ${{ steps.duplicate.outputs.open }}
     steps:
+      # Unconditional, and first: both checks below are scripts in the workspace (FR-086).
+      - name: Checkout workflow actions
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Skip issues planned for the future
         id: check
         env:
           GH_TOKEN: ${{ github.token }}
           ISSUE_NUMBER: ${{ inputs.issue-number }}
-        run: |
-          set -euo pipefail
-          labels=$(gh issue view "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --json labels \
-            --jq '[.labels[].name]')
-
-          # A queued run executes long after it was dispatched, and the issue can be closed in
-          # between. Without this check the run claims a closed issue, burns an agent run on it
-          # and opens a pull request nobody asked for.
-          state=$(gh issue view "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --json state --jq .state)
-          if [ "$state" = "CLOSED" ]; then
-            echo "eligible=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Issue #$ISSUE_NUMBER is closed. Automated implementation skipped."
-            exit 0
-          fi
-
-          if jq -e 'index("future")' >/dev/null <<<"$labels"; then
-            echo "eligible=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Issue #$ISSUE_NUMBER has the future label. Automated implementation skipped."
-            exit 0
-          fi
-
-          # Refine writes `Blocked by #M` when order genuinely matters (feature 007 X12). Nothing
-          # read it, so a child could be implemented before the sibling it builds on had landed.
-          # A blocker counts until it is closed; one that cannot be read counts as open.
-          body=$(gh issue view "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --json body --jq '.body // ""')
-          open_blockers=""
-          for blocker in $(grep -oiE 'blocked by #[0-9]+' <<<"$body" | grep -oE '[0-9]+' | sort -un || true); do
-            blocker_state=$(gh issue view "$blocker" --repo "$GITHUB_REPOSITORY" --json state --jq .state 2>/dev/null || echo UNKNOWN)
-            [ "$blocker_state" = "CLOSED" ] || open_blockers="${open_blockers} #${blocker}"
-          done
-          if [ -n "$open_blockers" ]; then
-            echo "eligible=false" >> "$GITHUB_OUTPUT"
-            echo "blocked_by=${open_blockers# }" >> "$GITHUB_OUTPUT"
-            echo "::notice::Issue #$ISSUE_NUMBER is blocked by${open_blockers}; it starts when they close."
-            exit 0
-          fi
-
-          echo "eligible=true" >> "$GITHUB_OUTPUT"
+        run: bash ./.github/actions/check-implement-eligibility/check-eligibility.sh
 
       # Asked here, and not only in the router, because here is inside the concurrency
       # group. The router asks the moment an event arrives: two events for one issue both
@@ -167,11 +135,6 @@ jobs:
       # Keyed on the App's own record of the pull request it opened (FR-064) rather than on
       # a branch prefix: a prefix matches every branch this loop has open, so one unfinished
       # pull request would stop every other issue being implemented.
-      - name: Checkout workflow actions
-        if: steps.check.outputs.eligible == 'true'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
       - name: Read the linkage the App recorded
         id: linkage
         if: steps.check.outputs.eligible == 'true'
@@ -190,27 +153,7 @@ jobs:
           LINKED_PR: ${{ steps.linkage.outputs.pr }}
           HOLD_LABEL: ${{ env.HOLD_LABEL }}
           ROLLBACK_LABEL: ${{ env.ROLLBACK_LABEL }}
-        run: |
-          set -euo pipefail
-          if [ -z "${LINKED_PR:-}" ]; then
-            echo "open=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          state=$(gh pr view "$LINKED_PR" --repo "$REPO" --json state --jq .state 2>/dev/null || echo UNKNOWN)
-          if [ "$state" = "OPEN" ]; then
-            echo "open=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::#${ISSUE_NUMBER} already has open pull request #${LINKED_PR} from this loop. This run stops rather than opening a second one."
-          elif [ "$state" = "MERGED" ] && ! gh issue view "$ISSUE_NUMBER" --repo "$REPO" --json labels --jq '.labels[].name' \
-              | grep -qxE "${HOLD_LABEL}|${ROLLBACK_LABEL}"; then
-            # Merged and travelling: the change is on its way through the stages, so another
-            # implement would build it twice (#184 duplicated the merged #183 on loopscope,
-            # 20/11/2026). A re-implement is wanted only once the change is held or rolled back.
-            echo "open=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::#${ISSUE_NUMBER} already has merged pull request #${LINKED_PR}, and the issue is neither held nor rolled back. This run stops rather than implementing it again."
-          else
-            # Closed unmerged, or merged and then held or rolled back: a re-implement is legitimate.
-            echo "open=false" >> "$GITHUB_OUTPUT"
-          fi
+        run: bash ./.github/actions/check-implement-eligibility/find-existing-change.sh
 
   reserve:
     needs: [eligibility]
@@ -340,17 +283,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ needs.safe_outputs.outputs.created_pr_number }}
-        run: |
-          set -euo pipefail
-          body=$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json body --jq '.body // ""')
-          if grep -qE '^## Verification' <<<"$body" && grep -qE '^Tested:' <<<"$body" && grep -qE '^Not tested:' <<<"$body"; then
-            echo "PR #$PR_NUMBER states what was tested and what was not."
-            exit 0
-          fi
-          marker="<!-- implement-no-verification -->"
-          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body "${marker}
-          The implementing agent did not say what it tested: this pull request has no \`## Verification\` section with \`Tested:\` and \`Not tested:\` lines. Treat its checks as unstated, and rely on CI and the review rather than on the description."
-          echo "::warning::PR #$PR_NUMBER does not state what was tested."
+        run: bash ./.github/actions/check-pr-verification/check-pr-verification.sh
       - name: Verify PR closes the source issue
         if: needs.safe_outputs.outputs.created_pr_number != ''
         uses: ./.github/actions/link-pr-to-issue
