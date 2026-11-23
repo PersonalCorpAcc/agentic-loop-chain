@@ -7,9 +7,11 @@
 # Writes to GITHUB_OUTPUT:
 #   minutes   how long the agent job ran, or -1 when it cannot be read (treat as long)
 #   billing   true when the provider refused the account (no credit, bad key): never retried
+#   transient true when the run ended on a temporary answer from the provider's edge
 #   kind      credits  -- the repository's daily AI-credit allowance stopped the agent starting
 #             outage   -- the agent ran briefly and was not refused: what a provider outage
-#                         looks like, and worth repeating
+#                         looks like, and worth repeating. Also a run of any length whose
+#                         last words are the provider's transient answer (see TRANSIENT below)
 #             billing  -- as above
 #             final    -- anything else: a run that got this far will fail the same way again
 #
@@ -35,14 +37,38 @@ fi
 # yet" and left no outcome at all (loopscope #293, 22/11/2026). An older gh has no such flag.
 log_flags=()
 if gh api --help 2>&1 | grep -q -- '--allow-escape-sequences'; then log_flags=(--allow-escape-sequences); fi
+# The job finished seconds ago and its log is archived a little later, so an empty read is
+# asked again before it is taken as "nothing said".
+log="$(mktemp)"
+if [ -n "${job_id:-}" ]; then
+  for wait in 0 10 20 30; do
+    sleep "$wait"
+    gh api "${log_flags[@]}" "repos/$REPO/actions/jobs/${job_id}/logs" > "$log" 2>/dev/null || true
+    [ -s "$log" ] && break
+  done
+fi
+tail -n "${TAIL_LINES:-200}" "$log" > "$log.tail"
+
+# A temporary answer from the provider's edge, not from the provider: a Cloudflare challenge
+# page ("Just a moment..."), an overloaded or 5xx status. The CLI can wrap it in its own words
+# -- loopscope #363, 22/11/2026: after fifteen minutes of good calls the claude CLI reported
+# "Failed to authenticate. API Error: Just a moment..." with `authentication_failed`, which
+# the refusal signature matches -- so this is asked first, and only of the log's last lines,
+# where the run's ending is, rather than of tool output that quotes anything at all.
+TRANSIENT='Just a moment\.\.\.|cf-chl|challenge-platform|overloaded_error|"api_error_status":5[0-9][0-9]|50[234] (Bad Gateway|Service Unavailable|Gateway Time-?out)'
+transient=false
+if grep -qE "$TRANSIENT" "$log.tail"; then transient=true; fi
+
 billing=false
-if [ -n "${job_id:-}" ] && [ -n "${REFUSAL_SIGNATURE:-}" ] &&
-  gh api "${log_flags[@]}" "repos/$REPO/actions/jobs/${job_id}/logs" 2>/dev/null | grep -qiE "${REFUSAL_SIGNATURE}"; then
+if [ "$transient" = false ] && [ -n "${REFUSAL_SIGNATURE:-}" ] && grep -qiE "${REFUSAL_SIGNATURE}" "$log"; then
   billing=true
 fi
+rm -f "$log" "$log.tail"
 
 if [ "${CREDITS_EXCEEDED:-false}" = true ]; then
   kind=credits
+elif [ "$transient" = true ]; then
+  kind=outage
 elif [ "$billing" = true ]; then
   kind=billing
 elif [ "$minutes" -ge 0 ] && [ "$minutes" -lt "$UNDER_MINUTES" ]; then
@@ -54,6 +80,7 @@ fi
 {
   echo "minutes=$minutes"
   echo "billing=$billing"
+  echo "transient=$transient"
   echo "kind=$kind"
 } >> "$GITHUB_OUTPUT"
-echo "agent job ran for ${minutes}m; billing=${billing}; credits exceeded=${CREDITS_EXCEEDED:-false}; kind=${kind}"
+echo "agent job ran for ${minutes}m; transient=${transient}; billing=${billing}; credits exceeded=${CREDITS_EXCEEDED:-false}; kind=${kind}"

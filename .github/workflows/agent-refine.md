@@ -375,7 +375,7 @@ jobs:
           issue-number: ${{ inputs.issue-number }}
           body: |
             <!-- agent-retry-pending: refine ${{ steps.classify.outputs.kind }} -->
-            ${{ steps.classify.outputs.kind == 'credits' && format('The agent did not start: this repository has used its daily AI-credit allowance ({0} of {1}; the `GH_AW_DEFAULT_MAX_DAILY_AI_CREDITS` repository variable sets it).', needs.activation.outputs.daily_ai_credits_total_effective_tokens, needs.activation.outputs.daily_ai_credits_threshold) || format('Refinement ended after {0} minutes without an outcome, which is what a provider outage looks like.', steps.classify.outputs.minutes) }} Nothing is wrong with the issue. It keeps `${{ env.REFINE_LABEL }}`, and the hourly sweep starts it again.
+            ${{ steps.classify.outputs.kind == 'credits' && format('The agent did not start: this repository has used its daily AI-credit allowance ({0} of {1}; the `GH_AW_DEFAULT_MAX_DAILY_AI_CREDITS` repository variable sets it).', needs.activation.outputs.daily_ai_credits_total_effective_tokens, needs.activation.outputs.daily_ai_credits_threshold) || steps.classify.outputs.transient == 'true' && format('Refinement ended after {0} minutes on a temporary answer from the model provider (a challenge page or a server error), not a refusal.', steps.classify.outputs.minutes) || format('Refinement ended after {0} minutes without an outcome, which is what a provider outage looks like.', steps.classify.outputs.minutes) }} Nothing is wrong with the issue. It keeps `${{ env.REFINE_LABEL }}`, and the hourly sweep starts it again.
             [View this workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
       - name: Flag for human review
         if: steps.classify.outputs.kind != 'credits' && steps.classify.outputs.kind != 'outage'
@@ -446,6 +446,8 @@ steps:
       issue-number: ${{ inputs.issue-number }}
       output-path: ${{ env.ISSUE_CONTEXT_PATH }}
 
+# Each run's OpenTelemetry GenAI spans -- duration, tokens, model, outcome; never prompt or
+# response content -- go to the profile's OTLP endpoint (feature 007 X14, FR-074).
 safe-outputs:
   # A failed run is already a red run. An issue per failure buries the real backlog
   # under noise nobody closes.
@@ -482,6 +484,10 @@ timeout-minutes: 40
 3. Explore before you write. Call skill("${{ env.PLAN_EXPLORE_SKILL }}") and hold its stance for this step:
    read-only, no plans, no files, no branches. You are only building understanding here, never
    producing artifacts.
+
+   The agent kit's skills are files at `.agents/skills/<name>/SKILL.md` and its commands at
+   `.opencode/commands/<name>.md`. Where your tools have no skill or command by that name, read
+   that file and follow it; it is the same instruction. Do not stop or search for it elsewhere.
 
    Split the issue into work units first. If the issue body is a bullet list of distinct tasks
    (for example "- check the button component", "- then check the login", "- then suggest a
