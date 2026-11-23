@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/post-gate-advice/post-gate-advice.sh. Profile digest: ebdd90dc5c5b. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/post-gate-advice/post-gate-advice.sh. Profile digest: ccaabc0b4a1d. Update with `workflows update --force`; consumer edits may be overwritten.
 #
 # The merge gate's one write in shadow mode (feature 007 X11, FR-027). On a pull request a person
 # opened, the gate assesses and advises: one comment on the pull request carrying the verdict in

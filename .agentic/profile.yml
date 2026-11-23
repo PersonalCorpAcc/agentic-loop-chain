@@ -115,7 +115,7 @@ canary:
   cron: "17 4 * * *"
   standInSecret: CANARY_STAND_IN_TOKEN
   # The dead-man's switch: these canaries must each have cycled in the last 26 hours (007 APP-03).
-  peers: [canary, release]
+  peers: [PersonalCorpAcc/agentic-loop-canary, PersonalCorpAcc/agentic-loop-release]
 
 constitution:
   entry: AGENTS.md

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/find-duplicate-implement/find-duplicate-implement.sh. Profile digest: ebdd90dc5c5b. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/find-duplicate-implement/find-duplicate-implement.sh. Profile digest: ccaabc0b4a1d. Update with `workflows update --force`; consumer edits may be overwritten.
 #
 # Is an implement for this issue already under way, so this router run should not start
 # another? Writes `has-open-pr=true|false` to GITHUB_OUTPUT.
