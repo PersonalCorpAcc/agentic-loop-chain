@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/await-pr-landing/await-pr-landing.sh. Profile digest: ebdd90dc5c5b. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/await-pr-landing/await-pr-landing.sh. Profile digest: ccaabc0b4a1d. Update with `workflows update --force`; consumer edits may be overwritten.
 #
 # Hold the implement slot until this issue's pull request merges, closes, or is handed to a
 # person, or until MAX_WAIT_MINUTES pass (FR-054). Always exits 0: the slot is released either

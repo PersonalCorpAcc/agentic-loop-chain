@@ -1,5 +1,5 @@
 ---
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/workflows/agent-implement.md. Profile digest: ebdd90dc5c5b. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/workflows/agent-implement.md. Profile digest: ccaabc0b4a1d. Update with `workflows update --force`; consumer edits may be overwritten.
 env:
   VERIFY_COMMANDS: "pnpm install --frozen-lockfile && pnpm run build && pnpm run test"
   REPO_RULES: "Install with the lockfile frozen; an install that resolves a different tree is not reproducing the change under review. Run scripts through pnpm rather than npx, or a second package manager's lockfile appears in the diff."
@@ -448,16 +448,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           ISSUE_NUMBER: ${{ inputs.issue-number }}
           BLOCKED_BY: ${{ needs.eligibility.outputs.blocked_by }}
-        run: |
-          set -euo pipefail
-          gh issue edit "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label "${{ env.WORKING_LABEL }}" || true
-          marker="<!-- implement-held-for-blockers -->"
-          already=$(gh api "repos/$GITHUB_REPOSITORY/issues/$ISSUE_NUMBER/comments?per_page=100" --paginate \
-            --jq ".[] | select(.body | contains(\"$marker\")) | .id" | grep -c . || true)
-          if [ "${already:-0}" -eq 0 ]; then
-            gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body "${marker}
-          Held: this issue is blocked by ${BLOCKED_BY}, which must land first. It keeps \`${{ env.IMPLEMENT_LABEL }}\` and starts on its own once every blocker is closed."
-          fi
+          WORKING_LABEL: ${{ env.WORKING_LABEL }}
+          IMPLEMENT_LABEL: ${{ env.IMPLEMENT_LABEL }}
+        run: bash ./.github/actions/check-implement-eligibility/hold-for-blockers.sh
       - name: Record the outcome
         if: always()
         uses: ./.github/actions/record-outcome
@@ -468,6 +461,69 @@ jobs:
           subject: ${{ format('#{0}', inputs.issue-number) }}
           detail: ${{ format('Blocked by {0}; it starts when they close.', needs.eligibility.outputs.blocked_by) }}
 
+  # gh-aw makes every custom job depend on activation, so when activation itself fails --
+  # a runtime import missing from the checkout, a secret it cannot read -- eligibility, reserve,
+  # the agent and the incomplete job below all skip, and nothing removes the reservation the
+  # authorisation added: the issue sat as `bot-working` with no word on it (agentic-loop-evals #34,
+  # 23/11/2026, the first opencode run on gh-aw v1.3.1). A failed activation is a configuration
+  # fault that a retry repeats, so the issue goes to a person with the run that says why.
+  activation_failed:
+    needs: [activation]
+    if: always() && needs.activation.result == 'failure'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Checkout workflow actions
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Create bot token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ secrets.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-issues: write
+          permission-pull-requests: write
+          permission-actions: write
+          permission-workflows: write
+      - name: Release the issue
+        uses: ./.github/actions/remove-issue-labels
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          issue-number: ${{ inputs.issue-number }}
+          labels: |
+            ${{ env.WORKING_LABEL }}
+            ${{ env.IMPLEMENT_LABEL }}
+      - name: Hand it to a person
+        uses: ./.github/actions/add-issue-labels
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          issue-number: ${{ inputs.issue-number }}
+          labels: ${{ env.REVIEW_LABEL }}
+      - name: Say why
+        uses: ./.github/actions/create-issue-comment
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          issue-number: ${{ inputs.issue-number }}
+          body: |
+            ${{ env.IMPLEMENT_MARKER }}
+            The implement run stopped before the agent started: the workflow's activation failed, which is a fault in how this repository's workflows are installed or configured, not in the issue, and a retry would stop the same way. The run's activation job says what it could not do. Once that is fixed, remove `${{ env.REVIEW_LABEL }}` and add `${{ env.IMPLEMENT_LABEL }}` again.
+            [View this workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+      - name: Record the outcome
+        if: always()
+        uses: ./.github/actions/record-outcome
+        with:
+          outcome: handed-to-human
+          reason: activation-failed
+          route: implement
+          subject: "#${{ inputs.issue-number }}"
+          detail: "The run's activation failed before the agent started; the issue is released and handed to a person."
   incomplete:
     needs: [activation, agent, safe_outputs, eligibility]
     if: >
@@ -524,20 +580,7 @@ jobs:
           MINUTES: ${{ steps.classify.outputs.minutes }}
           ATTEMPTS: ${{ inputs.attempts_so_far || '0' }}
           PARK_AT: ${{ env.PARK_AT_ATTEMPT }}
-        run: |
-          set -euo pipefail
-          retry=false
-          deferred=false
-          if [ "$KIND" = outage ] && [ "$ATTEMPTS" -lt "$PARK_AT" ]; then retry=true; fi
-          if [ "$KIND" = credits ]; then deferred=true; fi
-          {
-            echo "retry=$retry"
-            echo "deferred=$deferred"
-            echo "billing=$BILLING"
-            echo "next=$((ATTEMPTS + 1))"
-            echo "minutes=$MINUTES"
-          } >> "$GITHUB_OUTPUT"
-          echo "kind=${KIND}; attempts so far ${ATTEMPTS}; retry=${retry}; deferred=${deferred}"
+        run: bash ./.github/actions/retry-pending/decide-implement-retry.sh
       # The attempt is recorded before any label moves, so a failure in the steps below leaves a
       # run that can be counted rather than an issue released with nothing to show for it.
       - name: Report the failed attempt
@@ -592,18 +635,7 @@ jobs:
           ISSUE_NUMBER: ${{ inputs.issue-number }}
           NEXT: ${{ steps.decide.outputs.next }}
           RUN_ID: ${{ github.run_id }}
-        run: |
-          set -euo pipefail
-          # The provider recovers in seconds, so pause before re-entering rather than dispatching
-          # back into the same outage. The router's own classify and authorize jobs add more.
-          sleep 30
-          # `retry-of` names this run, which is still in progress while it dispatches: without
-          # it the router's in-flight check saw this run as an implement already running for
-          # the issue and dropped every retry as a duplicate (loopscope #164, 21/11/2026).
-          gh workflow run work-router.yml --repo "$REPO" --ref "$REF" \
-            -f operation=implement -f issue-number="$ISSUE_NUMBER" -f attempts_so_far="$NEXT" \
-            -f retry-of="$RUN_ID"
-          echo "Re-dispatched implement for #$ISSUE_NUMBER as attempt $NEXT."
+        run: bash ./.github/actions/retry-pending/redispatch-implement.sh
       # The daily allowance: the issue keeps `implement`, only the reservation comes off, and the
       # hourly sweep starts it again once it has waited the retry window (FR-113).
       - name: Release the reservation until the allowance resets

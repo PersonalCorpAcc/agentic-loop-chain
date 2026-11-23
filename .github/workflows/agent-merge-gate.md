@@ -1,5 +1,5 @@
 ---
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/workflows/agent-merge-gate.md. Profile digest: ebdd90dc5c5b. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/workflows/agent-merge-gate.md. Profile digest: ccaabc0b4a1d. Update with `workflows update --force`; consumer edits may be overwritten.
 env:
   VERIFY_COMMANDS: "pnpm install --frozen-lockfile && pnpm run build && pnpm run test"
   REPO_RULES: "Install with the lockfile frozen; an install that resolves a different tree is not reproducing the change under review. Run scripts through pnpm rather than npx, or a second package manager's lockfile appears in the diff."
@@ -205,36 +205,7 @@ jobs:
           AUTO_MERGE_MODE: ${{ env.AUTO_MERGE_MODE }}
           AUTO_MERGE_TARGETS: ${{ env.AUTO_MERGE_TARGETS }}
           ADVISE: ${{ steps.subject.outputs.advise }}
-        run: |
-          set -euo pipefail
-          # Advice merges nothing, whatever the policy says about this base (FR-027).
-          if [ "${ADVISE:-false}" = "true" ]; then
-            {
-              echo "auto_merge=false"
-              echo "verdict_word=approve"
-              echo "verdict_sentence=this is advice on a person's pull request and nothing merges; say approve"
-            } >> "$GITHUB_OUTPUT"
-            echo "A person's pull request, assessed advise-only: nothing merges whatever the verdict."
-            exit 0
-          fi
-          auto_merge=false
-          if [ "${AUTO_MERGE_MODE:-off}" != "off" ] && [ -n "${BASE:-}" ]; then
-            while IFS= read -r target; do
-              [ "$target" = "$BASE" ] || continue
-              auto_merge=true
-              break
-            done < <(printf '%s\n' "${AUTO_MERGE_TARGETS:-}" | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
-          fi
-          echo "auto_merge=$auto_merge" >> "$GITHUB_OUTPUT"
-          if [ "$auto_merge" = true ]; then
-            echo "verdict_word=merge" >> "$GITHUB_OUTPUT"
-            echo "verdict_sentence=this pull request merges itself when you say merge" >> "$GITHUB_OUTPUT"
-            echo "This repository merges into ${BASE} unattended (${AUTO_MERGE_MODE}); a clean assessment merges."
-          else
-            echo "verdict_word=approve" >> "$GITHUB_OUTPUT"
-            echo "verdict_sentence=a person merges this pull request; say approve" >> "$GITHUB_OUTPUT"
-            echo "This repository does not merge into ${BASE:-?} unattended; a clean assessment is an approval and a person merges."
-          fi
+        run: bash ./.github/actions/merge-gate/decide-auto-merge.sh
       - name: Block a pull request with requested changes
         id: review
         env:
@@ -259,63 +230,7 @@ jobs:
           GATE_MODE: ${{ env.GATE_MODE }}
           BASE: ${{ steps.subject.outputs.base }}
           VERDICT_WORD: ${{ steps.policy.outputs.verdict_word }}
-        run: |
-          set -euo pipefail
-          # Review mode (feature 007 X08, FR-024): the agent reviews and never pushes. Advice
-          # (below) already changes nothing and says so itself.
-          if [ "${GATE_MODE:-fix}" = review ] && [ "${ADVISE:-false}" != true ]; then
-            {
-              echo "mode_note<<EOF_MODE"
-              echo "**Review mode: you never push.** This repository's merge gate reviews and does not fix. Steps 4b and 6 do not apply: do not merge the base in, resolve a conflict, fix CI, commit, or call \`push_to_pull_request_branch\`. Instead:"
-              echo ""
-              echo "- Verify every finding before you list it: read the lines it is about, and for a CI failure the log lines that show it. Cite the file and line. Do not list anything you have not checked."
-              echo "- List the findings in a \`### Findings\` section, worst first, one per line: \`- [blocker] <file>:<line> -- <what is wrong> -- <what to change>\`, and the same with \`[major]\` and \`[minor]\`. A blocker is a failed CI job, a conflict with the base (say: merge \`origin/${BASE}\` into the branch, never rebase, and resolve it), an acceptance criterion the change does not meet, or a defect it introduces. A major is a gap it should not ship with: new behaviour with no test, or a case the acceptance criteria name that the code misses. A minor is anything else worth saying; minors never hold a change."
-              echo "- The verdict is \`${VERDICT_WORD}\` when there is no blocker and no major; \`changes\` when there are, and an agent could make them from your findings; \`review\` when a person must judge: checks 2, 3, 5, 6 or 8 flagged, low confidence, or a failure you cannot explain. \`remediated\` is not available. The workflow requests the changes as a pull-request review, apply-review makes them, and you review again when CI has run."
-              echo "EOF_MODE"
-            } >> "$GITHUB_OUTPUT"
-          else
-            echo "mode_note=" >> "$GITHUB_OUTPUT"
-          fi
-          if [ "${ADVISE:-false}" = true ]; then
-            # Advise only (feature 007 X11, FR-027). The rest of the prompt is written for a
-            # pull request this loop opened and may push to; this note comes first and says
-            # which parts of it do not apply.
-            if [ -n "${ISSUE:-}" ]; then
-              echo "subject_clause=was opened by a person, not by this loop, and refers to issue **#${ISSUE}**" >> "$GITHUB_OUTPUT"
-              echo "context_instruction=Read \`${ISSUE_CONTEXT_PATH}\`. It contains the issue this pull request refers to and its discussion; its acceptance criteria are what the change should satisfy." >> "$GITHUB_OUTPUT"
-            else
-              echo "subject_clause=was opened by a person, not by this loop, and names no issue" >> "$GITHUB_OUTPUT"
-              echo "context_instruction=There is no issue context: this pull request names no issue. Assess it on its diff, its title and body in \`/tmp/gh-aw/agent/pr.json\`, and the CI conclusion; for check 7, compare the diff with what the title and body say it does." >> "$GITHUB_OUTPUT"
-            fi
-            {
-              echo "promotion_note="
-              echo "checked_note=It has already been confirmed that this is an open pull request from this repository. Do not re-check that, and do not poll for checks: the conclusion above is the answer."
-              echo "advise_note<<EOF_ADVISE"
-              echo "**Advise only: change nothing.** A person opened this pull request. This repository runs the gate in shadow on such pull requests so that your judgement can be compared with the decisions of the people who review them. Your whole job is the assessment and a verdict:"
-              echo ""
-              echo "- Do not commit, push, merge the base in, resolve a conflict, fix CI or remediate anything, and never call \`push_to_pull_request_branch\`. Steps 4b and 6 do not apply: where they would have you act, select \`review\` and say in your findings what you would have fixed."
-              echo "- Do not add or remove labels, approve, merge or close anything, and write nothing but the one comment below."
-              echo "- The only verdicts are \`approve\`, when every check passes, and \`review\` for anything else, a failed or missing CI result included. \`remediated\` is not available."
-              echo "- Emit exactly one \`add_comment\` targeting pull request #${PR}, in the format step 8 describes. The workflow posts it as advice, and nothing else happens."
-              echo "EOF_ADVISE"
-            } >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          echo "advise_note=" >> "$GITHUB_OUTPUT"
-          echo "checked_note=It has already been confirmed that this is an open pull request we authored, that it closes an issue, and that the issue carries \`${IMPLEMENT_LABEL}\`. Do not re-check any of that, and do not poll for checks: the conclusion above is the answer." >> "$GITHUB_OUTPUT"
-          if [ "${PROMOTION:-false}" = true ]; then
-            echo "subject_clause=promotes a set of changes, one of which is issue **#${ISSUE}**" >> "$GITHUB_OUTPUT"
-            {
-              echo "promotion_note<<EOF_NOTE"
-              echo "This is a **promotion**. Its head is a snapshot of the stage below, so it carries several changes, each of which already passed this gate on its way to that stage; its body names every issue it carries. You are not re-assessing them one by one. What you are assessing is the promotion itself: that CI is green on the combination, that nothing in the diff is a file this repository protects, and that the set is what the body says it is. Post your assessment on this pull request, and do not touch any issue."
-              echo "EOF_NOTE"
-            } >> "$GITHUB_OUTPUT"
-            echo "context_instruction=There is no issue context on a promotion: it carries several issues, and any one of their acceptance criteria would be the wrong measure for the rest. The diff and the CI conclusion are what you have, and they are what a promotion is assessed on." >> "$GITHUB_OUTPUT"
-          else
-            echo "subject_clause=closes issue **#${ISSUE}**" >> "$GITHUB_OUTPUT"
-            echo "promotion_note=" >> "$GITHUB_OUTPUT"
-            echo "context_instruction=Read \`${ISSUE_CONTEXT_PATH}\`. It contains the issue body and its discussion. When running \`/${VERIFY_COMMAND}\`, the acceptance criteria there define what the implementation must satisfy." >> "$GITHUB_OUTPUT"
-          fi
+        run: bash ./.github/actions/merge-gate/phrase-assessment.sh
       - name: Record the outcome
         if: always()
         uses: ./.github/actions/record-outcome
@@ -426,41 +341,7 @@ jobs:
           # Composed by the installer from the engine baseline, the declared packs'
           # manifests and lockfiles, and the profile's documents (FR-022).
           PROTECTED_FILES: ${{ env.PROTECTED_FILES }}
-        run: |
-          set -euo pipefail
-          # Compared against the merge base as it is now, rather than read from the pull
-          # request's own file list (FR-083).
-          #
-          # A pull request keeps the base it was opened against. When the base branch's
-          # history moves -- a back-merge, a realignment, anything that is not a fast-forward
-          # of what it had -- `pulls/{n}/files` goes on answering from the old merge base,
-          # for ever: on the canary on 18/09/2026 it reported 83 changed files where git said
-          # two, and neither a `synchronize` event nor twenty minutes shifted it. This rule
-          # decides whether a person must look at a change, so reading a stale list means
-          # handing over work nobody needed to do -- and, in the other direction, a rule that
-          # is wrong in one direction is not one anybody should trust in the other.
-          #
-          # The three-dot compare is computed when it is asked for, so it cannot go stale.
-          head_sha=$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq '.headRefOid')
-          # Kept whole for the test-integrity check, which reads each file's status and patch.
-          compare_file="$RUNNER_TEMP/compare.json"
-          gh api "repos/$REPO/compare/${BASE}...${head_sha}" > "$compare_file" || true
-          files=$(jq -r '.files[]?.filename' "$compare_file" 2>/dev/null || true)
-          # The compare endpoint stops at 300 files and says so by giving exactly that many.
-          # Past it the pull request's own list is the only one available, stale or not, and a
-          # change that large is one a person should see anyway.
-          if [ "$(printf '%s\n' "$files" | grep -c .)" -ge 300 ]; then
-            echo "::warning::PR #${PR} changes 300 files or more, which is the compare limit; falling back to the pull request's own file list."
-            gh api --paginate "repos/$REPO/pulls/$PR/files?per_page=100" | jq -s 'add' > "$compare_file"
-            files=$(jq -r '.[].filename' "$compare_file")
-          fi
-          echo "compare_file=$compare_file" >> "$GITHUB_OUTPUT"
-          protected=$(printf '%s\n' "$files" | grep -E "$PROTECTED_FILES" || true)
-          {
-            echo 'files<<EOF'
-            printf '%s\n' "$protected"
-            echo EOF
-          } >> "$GITHUB_OUTPUT"
+        run: bash ./.github/actions/merge-gate/list-protected-changes.sh
       # A change that deletes a test, renames one away or adds a skip marker hands the pull
       # request to a person, as a protected file does: the agent must not be able to make a
       # failing test disappear (007 X06). Decided here, deterministically, not by the model.
@@ -476,20 +357,7 @@ jobs:
         env:
           PROTECTED: ${{ steps.protected.outputs.files }}
           FINDINGS: ${{ steps.integrity.outputs.findings }}
-        run: |
-          set -euo pipefail
-          listed=$(printf '%s\n%s\n' "$PROTECTED" "$FINDINGS" | grep -v '^$' || true)
-          if [ -n "$listed" ]; then
-            echo "requires_review=true" >> "$GITHUB_OUTPUT"
-            {
-              echo 'files<<EOF'
-              printf '%s\n' "$listed"
-              echo EOF
-            } >> "$GITHUB_OUTPUT"
-          else
-            echo "requires_review=false" >> "$GITHUB_OUTPUT"
-            echo "files=" >> "$GITHUB_OUTPUT"
-          fi
+        run: bash ./.github/actions/merge-gate/decide-person-review.sh
 
   review_required:
     needs: [subject, protected_changes]
@@ -600,27 +468,7 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           REPO: ${{ github.repository }}
           PR: ${{ needs.subject.outputs.pr }}
-        run: |
-          set -euo pipefail
-          # GitHub computes mergeability lazily and answers UNKNOWN to the first question after
-          # the base moves, which read as "no conflict": on loopscope (20/11/2026) the gate saw a
-          # DIRTY pull request as mergeable, found no CI result, and asked for review instead of
-          # resolving the conflict (FR-108). Ask until it knows, and take a DIRTY merge state as
-          # a conflict too.
-          mergeable=UNKNOWN
-          state=""
-          for _ in 1 2 3 4 5 6 7 8; do
-            read -r mergeable state < <(gh pr view "$PR" --repo "$REPO" --json mergeable,mergeStateStatus \
-              --jq '"\(.mergeable) \(.mergeStateStatus)"' 2>/dev/null || echo "UNKNOWN UNKNOWN")
-            [ "$mergeable" = "UNKNOWN" ] || break
-            sleep 5
-          done
-          echo "PR #$PR: mergeable=$mergeable, merge state=$state"
-          if [ "$mergeable" = "CONFLICTING" ] || [ "$state" = "DIRTY" ]; then
-            echo "has_conflicts=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "has_conflicts=false" >> "$GITHUB_OUTPUT"
-          fi
+        run: bash ./.github/actions/merge-gate/check-merge-conflicts.sh
       # First attempt only. Retries are recorded by the incomplete job's attempt comment, and
       # every App comment is a router event: one issue collected sixteen of these in a day.
       # Under `human` the agent never sees the conflict: it is told nothing, runs nothing,
@@ -834,16 +682,7 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           REPO: ${{ github.repository }}
           PR: ${{ needs.subject.outputs.pr }}
-        run: |
-          set -euo pipefail
-          offenders="$(gh api "repos/${REPO}/pulls/${PR}/commits" --paginate \
-            --jq '.[] | select(.commit.message | test("(^|[^a-zA-Z])(close[sd]?|fixe?[sd]?|resolve[sd]?)[ :]*#[0-9]+"; "i")) | .sha[0:8] + " " + (.commit.message | split("\n")[0])')"
-          [ -z "$offenders" ] || {
-            echo "::error::PR #${PR} merges by rebase and these commits carry a closing keyword, which would close the issue at the first stage they land on:"
-            printf '%s\n' "$offenders" >&2
-            exit 1
-          }
-          echo "No commit on PR #${PR} closes an issue by keyword."
+        run: bash ./.github/actions/merge-gate/refuse-closing-commits.sh
       - name: Check the forge will take the merge
         id: preconditions
         if: needs.validate_output.outputs.outcome == 'merge' && needs.subject.outputs.auto_merge == 'true'
@@ -882,32 +721,7 @@ jobs:
           PR: ${{ needs.subject.outputs.pr }}
           MERGE_METHOD: ${{ env.MERGE_METHOD }}
           REFUSAL: ${{ steps.preconditions.outputs.refusal }}
-        run: |
-          set -euo pipefail
-          # The method is the profile's, chosen here rather than at merge time because with
-          # auto-merge the forge performs the merge later and takes the method now.
-          if armed="$(gh pr merge "$PR" --repo "$REPO" "--${MERGE_METHOD}" --auto 2>&1)"; then
-            echo "armed=true" >> "$GITHUB_OUTPUT"
-            gh pr comment "$PR" --repo "$REPO" --body "The merge gate found nothing to stop this pull request and has marked it ready: ${REFUSAL}
-
-            Nothing else is needed from the loop. Nothing about the issue has changed -- it is still reserved and still pending."
-            echo "PR #${PR}: auto-merge armed (${MERGE_METHOD}); waiting for the rule to be satisfied."
-          else
-            # The forge's own sentence, carried rather than guessed. There are at least two
-            # causes and they want different remedies: `Auto merge is not allowed for this
-            # repository` is the setting, off by default, and `Merge method rebase merging is
-            # not allowed` is the profile's merge method against what the repository or a
-            # ruleset permits -- observed 18/09/2026. Both refuse at once rather than
-            # accepting and never completing, which is the good outcome; what would make it
-            # expensive is a message that sent the reader to the wrong switch.
-            echo "armed=false" >> "$GITHUB_OUTPUT"
-            {
-              echo 'arm_error<<GHAWEOF'
-              printf '%s\n' "$armed" | head -n 3
-              echo GHAWEOF
-            } >> "$GITHUB_OUTPUT"
-            echo "::warning::PR #${PR}: auto-merge could not be armed. ${armed}"
-          fi
+        run: bash ./.github/actions/merge-gate/arm-auto-merge.sh
       - name: Hand the merge to a human when the forge refuses it
         if: needs.validate_output.outputs.outcome == 'merge' && needs.subject.outputs.auto_merge == 'true' && steps.preconditions.outputs.mergeable != 'true' && (steps.preconditions.outputs.deferrable != 'true' || steps.arm.outputs.armed != 'true')
         env:
@@ -918,19 +732,7 @@ jobs:
           ARMED: ${{ steps.arm.outputs.armed }}
           ARM_ERROR: ${{ steps.arm.outputs.arm_error }}
           DEFERRABLE: ${{ steps.preconditions.outputs.deferrable }}
-        run: |
-          set -euo pipefail
-          if [ "$DEFERRABLE" = "true" ] && [ "$ARMED" != "true" ]; then
-            gh pr comment "$PR" --repo "$REPO" --body "The merge gate approved this pull request but could not merge or queue it: ${REFUSAL}
-
-            It could not be marked ready either. The forge said:
-
-            > ${ARM_ERROR:-no reason given}
-
-            Two things cause that. **Allow auto-merge** may be switched off for this repository, which is its default. Or the merge method this loop is configured for may not be one the repository or its rulesets permit, in which case the two settings disagree and one of them has to move. Either way this pull request waits for a person."
-          else
-            gh pr comment "$PR" --repo "$REPO" --body "The merge gate approved this pull request but did not merge it: ${REFUSAL}"
-          fi
+        run: bash ./.github/actions/merge-gate/explain-refused-merge.sh
       - name: Flag the refused merge for review
         if: needs.subject.outputs.promotion != 'true' && (needs.validate_output.outputs.outcome == 'merge' && needs.subject.outputs.auto_merge == 'true' && steps.preconditions.outputs.mergeable != 'true' && (steps.preconditions.outputs.deferrable != 'true' || steps.arm.outputs.armed != 'true'))
         uses: ./.github/actions/add-issue-labels
@@ -1154,45 +956,7 @@ steps:
       PR: ${{ needs.subject.outputs.pr }}
       RUN_ID: ${{ needs.subject.outputs.run-id }}
       CONCLUSION: ${{ needs.subject.outputs.conclusion }}
-    run: |
-      set -euo pipefail
-      mkdir -p /tmp/gh-aw/agent
-      # gh 2.97 refuses to print a diff holding a terminal escape sequence, so a pull request
-      # that adds one (a test stripping colour codes, loopscope #348) crashed this step. The file
-      # is read as text, not shown on a terminal: pass the flag wherever this gh offers it.
-      diff_flags=()
-      if gh pr diff --help 2>&1 | grep -q -- '--allow-escape-sequences'; then diff_flags=(--allow-escape-sequences); fi
-      gh pr diff "$PR" --repo "$REPO" "${diff_flags[@]}" > /tmp/gh-aw/agent/diff.patch
-      gh pr view "$PR" --repo "$REPO" --json title,body,files,additions,deletions \
-        > /tmp/gh-aw/agent/pr.json
-
-      # What this working tree is not. The agent is on the head branch; CI ran on the merge of
-      # head and base. Everything the base supplies -- a dependency, a tsconfig path, a
-      # generated file -- is absent here, so a build run in this tree can fail for reasons that
-      # do not exist in what will land. Recorded rather than inferred, because the agent cannot
-      # see it and has already argued itself past a green CI run without it (PR #55).
-      base=$(gh pr view "$PR" --repo "$REPO" --json baseRefName --jq '.baseRefName')
-      git fetch -q origin "$base" 2>/dev/null || true
-      behind=$(git rev-list --count "HEAD..origin/$base" 2>/dev/null || echo "unknown")
-      {
-        echo "base branch: $base"
-        echo "commits on the base that this branch does not have: $behind"
-        if [ "$behind" != "unknown" ] && [ "$behind" != "0" ]; then
-          echo "files those commits touch:"
-          git diff --name-only "HEAD...origin/$base" 2>/dev/null | head -50
-        fi
-      } > /tmp/gh-aw/agent/base-state.txt
-      if [ "$CONCLUSION" = "failure" ] && [ -n "$RUN_ID" ]; then
-        gh run view "$RUN_ID" --repo "$REPO" --log-failed \
-          > /tmp/gh-aw/agent/failed-logs.txt 2>/dev/null || \
-          echo "logs unavailable" > /tmp/gh-aw/agent/failed-logs.txt
-        gh run view "$RUN_ID" --repo "$REPO" --json jobs \
-          --jq '[.jobs[] | select(.conclusion == "failure") | {name, conclusion}]' \
-          > /tmp/gh-aw/agent/failed-jobs.json
-      elif [ "$CONCLUSION" = "failure" ]; then
-        echo "[]" > /tmp/gh-aw/agent/failed-jobs.json
-        echo "CI run ID unavailable, cannot fetch logs" > /tmp/gh-aw/agent/failed-logs.txt
-      fi
+    run: bash ./.github/actions/merge-gate/fetch-gate-context.sh
 
 # Each run's OpenTelemetry GenAI spans -- duration, tokens, model, outcome; never prompt or
 # response content -- go to the profile's OTLP endpoint (feature 007 X14, FR-074).
