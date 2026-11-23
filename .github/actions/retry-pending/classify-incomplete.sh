@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/retry-pending/classify-incomplete.sh. Profile digest: ebdd90dc5c5b. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/retry-pending/classify-incomplete.sh. Profile digest: ccaabc0b4a1d. Update with `workflows update --force`; consumer edits may be overwritten.
 #
 # Why a worker's run ended without an outcome, as far as the run can tell (FR-087, FR-113).
 # Shared by implement and refine, whose incomplete jobs decide what to do with the answer.

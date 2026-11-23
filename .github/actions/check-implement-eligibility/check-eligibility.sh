@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/check-implement-eligibility/check-eligibility.sh. Profile digest: ebdd90dc5c5b. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/check-implement-eligibility/check-eligibility.sh. Profile digest: ccaabc0b4a1d. Update with `workflows update --force`; consumer edits may be overwritten.
 #
 # Is this issue one implement should start on now? Writes `eligible=true|false` to
 # GITHUB_OUTPUT, and `blocked_by=#M #N` when open blockers are why it is not.

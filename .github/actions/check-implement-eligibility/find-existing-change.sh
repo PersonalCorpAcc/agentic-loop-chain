@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/check-implement-eligibility/find-existing-change.sh. Profile digest: ebdd90dc5c5b. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/check-implement-eligibility/find-existing-change.sh. Profile digest: ccaabc0b4a1d. Update with `workflows update --force`; consumer edits may be overwritten.
 #
 # Does this issue already have a change from this loop that a new implement would duplicate?
 # Writes `open=true|false` to GITHUB_OUTPUT.

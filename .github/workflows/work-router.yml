@@ -1,4 +1,4 @@
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/workflows/work-router.yml. Profile digest: ebdd90dc5c5b. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/workflows/work-router.yml. Profile digest: ccaabc0b4a1d. Update with `workflows update --force`; consumer edits may be overwritten.
 name: "All Work Router"
 
 # Owns every repository automation trigger. Classifies each event into exactly one route,
@@ -223,52 +223,15 @@ jobs:
       TIER_SLIM: "ubuntu-24.04"
       TIER_CI: "ubuntu-24.04"
     steps:
+      - name: Check out the preflight script
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/actions/runner-preflight
       - name: Assert an online runner per tier
-        run: |
-          set -euo pipefail
-          summary() { echo "$1" >> "$GITHUB_STEP_SUMMARY"; echo "$1"; }
-          hosted='^(ubuntu|windows|macos)-'
-          runners=""
-          source=""
-          for endpoint in "repos/$REPO/actions/runners" "orgs/$OWNER/actions/runners"; do
-            if out="$(gh api --paginate "$endpoint" --jq '.runners[] | select(.status == "online") | [.labels[].name] | join(",")' 2>/dev/null)"; then
-              source="$endpoint"
-              runners="$out"
-              [ -n "$runners" ] && break
-            fi
-          done
-          offline=""
-          for tier in "agent=$TIER_AGENT" "slim=$TIER_SLIM" "ci=$TIER_CI"; do
-            name="${tier%%=*}"; labels="${tier#*=}"
-            [ -n "$labels" ] || continue
-            self_hosted=false
-            for label in ${labels//,/ }; do
-              printf '%s' "$label" | grep -Eq "$hosted" || self_hosted=true
-            done
-            [ "$self_hosted" = true ] || continue
-            if [ -z "$source" ]; then
-              summary "outcome=no-action route=- subject=- reason=runner-unverifiable"
-              summary "Neither the repository's nor the organisation's runner list could be read with this token, so whether the $name tier is online is not known."
-              exit 0
-            fi
-            found=false
-            while IFS= read -r have; do
-              [ -n "$have" ] || continue
-              ok=true
-              for label in ${labels//,/ }; do
-                case ",$have," in *",$label,"*) ;; *) ok=false ;; esac
-              done
-              [ "$ok" = true ] && found=true
-            done <<<"$runners"
-            [ "$found" = true ] || offline="$offline $name($labels)"
-          done
-          if [ -n "$offline" ]; then
-            summary "outcome=failed route=- subject=- reason=runner-offline"
-            summary "No online runner carries every label of:$offline. Work routed to those tiers would queue with no runner to take it."
-            exit 1
-          fi
-          summary "outcome=no-action route=- subject=- reason=runners-online"
-          summary "Every self-hosted tier has an online runner."
+        # Writes its own outcome line to the step summary: reason runner-offline,
+        # runner-unverifiable or runners-online.
+        run: bash ./.github/actions/runner-preflight/runner-preflight.sh
 
   # Public repositories must check repository permission before an event can start a model.
   authorize:
@@ -570,36 +533,7 @@ jobs:
           DISPATCH_BASE: ${{ inputs.base-branch }}
           KNOWN_BRANCHES: "dev,test,main"
           FALLBACK_BASE: "dev"
-        run: |
-          set -euo pipefail
-          base=""
-
-          # The forge first. It is the only authority on what a pull request targets, and a
-          # branch name typed into a dispatch box is a guess about it.
-          if [ -n "${PR_NUMBER:-}" ]; then
-            base="$(gh pr view "$PR_NUMBER" --repo "$REPO" --json baseRefName --jq '.baseRefName' 2>/dev/null || true)"
-          fi
-
-          # Then the dispatch input, for a gate dispatched without a pull request the forge
-          # will answer for. Checked against the branches this repository actually lands work
-          # on: an unknown value would get a lock all to itself, which is the same as no lock,
-          # and the belt exists precisely so that cannot happen.
-          if [ -z "$base" ] && [ -n "${DISPATCH_BASE:-}" ]; then
-            while IFS= read -r known; do
-              [ "$known" = "$DISPATCH_BASE" ] || continue
-              base="$DISPATCH_BASE"
-              break
-            done < <(printf '%s\n' "$KNOWN_BRANCHES" | tr ',' '\n')
-            [ -n "$base" ] ||
-              echo "::warning::Ignoring base-branch '${DISPATCH_BASE}': it is not one of ${KNOWN_BRANCHES}."
-          fi
-
-          # Then the profile's own base, so the key is never empty. An empty key does not
-          # fail: it puts every gate back into one queue, quietly, which is the behaviour
-          # this task exists to end.
-          base="${base:-$FALLBACK_BASE}"
-          echo "base=$base" >> "$GITHUB_OUTPUT"
-          echo "The merge belt for this run is keyed on '${base}'."
+        run: bash ./.github/actions/resolve-merge-base/resolve-merge-base.sh
       - name: Record the outcome
         if: always()
         uses: ./.github/actions/record-outcome
@@ -688,40 +622,20 @@ jobs:
       contents: read
       actions: write
     steps:
+      - name: Check out the approval and outcome actions
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            .github/actions/approve-pending-runs
+            .github/actions/record-outcome
       - name: Approve pending workflow runs
         id: approve
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           BRANCH: ${{ github.head_ref }}
-        run: |
-          set -euo pipefail
-
-          mapfile -t run_ids < <(
-            gh api "repos/$REPO/actions/runs?status=action_required&branch=$BRANCH" \
-              --jq '.workflow_runs[].id'
-          )
-
-          echo "approved=${#run_ids[@]}" >> "$GITHUB_OUTPUT"
-
-          if [ "${#run_ids[@]}" -eq 0 ]; then
-            echo "No runs awaiting approval on branch $BRANCH"
-            exit 0
-          fi
-
-          for run_id in "${run_ids[@]}"; do
-            # Only a run id. On a 5xx gh can print the error body where the answer goes, and
-            # approving "{" is a 404 that ends the job (chain canary, 21/11/2026).
-            case "$run_id" in '' | *[!0-9]*) echo "::warning::Skipping '$run_id': not a run id"; continue ;; esac
-            echo "Approving run $run_id"
-            gh api "repos/$REPO/actions/runs/$run_id/approve" --method POST
-          done
-      - name: Check out the outcome action
-        if: always()
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          sparse-checkout: .github/actions/record-outcome
+        run: bash ./.github/actions/approve-pending-runs/approve-pending-runs.sh
       - name: Record the outcome
         if: always()
         uses: ./.github/actions/record-outcome
@@ -801,50 +715,7 @@ jobs:
           LINKED: ${{ needs.classify.outputs.linked-issue }}
           BASE_REF: ${{ needs.classify.outputs.pr-base }}
           MERGED_STAGE_LABEL: ${{ env.MERGED_STAGE_LABEL }}
-        run: |
-          set -euo pipefail
-          # The classifier resolved this already for the routes that need it; this is the
-          # same rule when it did not (FR-030).
-          # shellcheck source=../actions/resolve-pr-issue/resolve-pr-issue.sh
-          . "$GITHUB_WORKSPACE/.github/actions/resolve-pr-issue/resolve-pr-issue.sh"
-
-          # Every issue this pull request carries, not just the first. Under `env-promotion`
-          # the head is a snapshot of the stage below, so one promotion carries whatever
-          # merged there since the last one and every one of those issues reached this stage
-          # when it merged. Labelling only the first would leave the rest sitting on a stage
-          # they had left, and would never close them (FR-031, FR-051).
-          #
-          # Every other strategy carries exactly one, so `issues` is that one and the scalar
-          # `issue` below is the same value: the readers that want a single number -- the
-          # outcome line, the comment text -- keep reading one.
-          issues="$(pr_issues "$PR")"
-          [ -n "$issues" ] || issues="$LINKED"
-          {
-            echo "issues<<EOF_ISSUES"
-            printf '%s\n' "$issues"
-            echo "EOF_ISSUES"
-          } >> "$GITHUB_OUTPUT"
-
-          issue="$LINKED"
-          [ -n "$issue" ] || issue="$(printf '%s' "$issues" | head -n1)"
-          echo "issue=${issue}" >> "$GITHUB_OUTPUT"
-          echo "issue_count=$(printf '%s\n' "$issues" | grep -c '[0-9]' || true)" >> "$GITHUB_OUTPUT"
-
-          # A promotion pull request carries the stage it was promoting into, which is what
-          # tells an unmerged close apart: a promotion that was rejected is a hold on the
-          # change, and a first-stage pull request that was closed is just a release.
-          promotion="$(gh pr view "$PR" --repo "$REPO" --json body --jq '.body // ""' |
-            grep -oE '<!-- promotion-pr: [^:]+: [0-9]+ -->' | head -n1 || true)"
-          echo "promotion=${promotion:+true}" >> "$GITHUB_OUTPUT"
-
-          # `merged-{stage}` with the stage filled in. Built here because the expression
-          # language has no substitution: format() positions arguments, it does not replace
-          # a token inside a string.
-          echo "stage_label=${MERGED_STAGE_LABEL/'{stage}'/$BASE_REF}" >> "$GITHUB_OUTPUT"
-
-          if [ -z "$issue" ]; then
-            echo "::notice::PR #${PR} closed on a stage but belongs to no issue this loop knows; nothing to move."
-          fi
+        run: bash ./.github/actions/stage-merge/find-carried-change.sh
       # A merge moves the change on: the stage it reached is recorded, and every label that
       # described it being in flight comes off. The label actions tolerate a label that is
       # not there, which `gh issue edit --add-label` does not.
@@ -908,28 +779,7 @@ jobs:
           # A dispatch runs the workflow file at the ref it names, and every event-triggered
           # run executes the default-branch copy, so this names the same one (FR-025).
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-        run: |
-          set -euo pipefail
-          case ",${STAGES}," in
-            *",${MOVED},"*) ;;
-            *)
-              echo "::notice::${MOVED} is not one of this repository's stages (${STAGES}); nothing to carry down."
-              exit 0
-              ;;
-          esac
-
-          # The first stage has nothing below it, and under trunk there is only one branch,
-          # so both answer here rather than dispatching a route that would find nothing.
-          first="${STAGES%%,*}"
-          if [ "$MOVED" = "$first" ]; then
-            echo "${MOVED} is the first stage, so no stage is below it; nothing to carry down."
-            exit 0
-          fi
-          echo "${MOVED} moved, so the stages below it may no longer descend from it; carrying down."
-          gh api "repos/$REPO/actions/workflows/work-router.yml/dispatches" \
-            --method POST \
-            -f ref="$DEFAULT_BRANCH" \
-            -f "inputs[operation]=sync-stages"
+        run: bash ./.github/actions/stage-merge/carry-stage-down.sh
       - name: Say why the change is held
         if: steps.change.outputs.issue != '' && needs.classify.outputs.pr-merged != 'true' && steps.change.outputs.promotion == 'true'
         uses: ./.github/actions/create-issue-comment
@@ -947,20 +797,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           ISSUES: ${{ steps.change.outputs.issues }}
-        run: |
-          set -euo pipefail
-          # Every carried issue, because under `env-promotion` the merge that reaches the
-          # closing stage reaches it for all of them at once. One `gh` call each, and a close
-          # that fails does not take the rest with it: the issues are independent and a
-          # half-closed set with an error is better than a set nobody closed.
-          while IFS= read -r issue; do
-            [ -n "$issue" ] || continue
-            if gh issue close "$issue" --repo "$REPO" --reason completed; then
-              echo "Issue #${issue} closed: its change reached the stage this repository ends on."
-            else
-              echo "::warning::Issue #${issue} reached the closing stage but could not be closed."
-            fi
-          done <<< "$ISSUES"
+        run: bash ./.github/actions/stage-merge/close-carried-issues.sh
       - name: Record the outcome
         if: always()
         uses: ./.github/actions/record-outcome
