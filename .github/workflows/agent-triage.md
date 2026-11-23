@@ -291,6 +291,8 @@ steps:
       repo: ${{ github.repository }}
       output-path: ${{ env.OPEN_ISSUES_PATH }}
 
+# Each run's OpenTelemetry GenAI spans -- duration, tokens, model, outcome; never prompt or
+# response content -- go to the profile's OTLP endpoint (feature 007 X14, FR-074).
 safe-outputs:
   # A failed run is already a red run. An issue per failure buries the real backlog
   # under noise nobody closes.

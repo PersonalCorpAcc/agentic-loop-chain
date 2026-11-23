@@ -1361,6 +1361,32 @@ else
   FAIL=$((FAIL + 1))
   echo "FAIL: incomplete runs are not retried: the belt's sweep, the classifier, a worker's marker or the router's retry-of exclusion is missing" >&2
 fi
+# A run that ended on the provider's temporary answer is an outage however long it ran, and is
+# asked before the refusal signature, which the CLI's wording of it matches (FR-123, loopscope #363).
+CLASSIFIER_SH="${HERE}/../retry-pending/classify-incomplete.sh"
+if [ -f "$CLASSIFIER_SH" ] && grep -q 'Just a moment' "$CLASSIFIER_SH" &&
+  grep -q 'elif \[ "\$transient" = true \]; then' "$CLASSIFIER_SH"; then
+  PASS=$((PASS + 1))
+else
+  FAIL=$((FAIL + 1))
+  echo "FAIL: a run that ended on a provider challenge page or 5xx is handed to a person, not retried" >&2
+fi
+
+# The metrics contract pins the agent step's name (constitution 1.6.0, Principle VI): gh-aw calls
+# it `Execute <engine> CLI` under every engine compiled, and a collector finds the agent's run by
+# it. Checked wherever this repository's locks are compiled; a payload with no locks has none to
+# check (feature 007 APP-05, FR-099).
+STEP_NAME_OK=1
+for lock in "${HERE}"/../../workflows/agent-*.lock.yml; do
+  [ -f "$lock" ] || continue
+  grep -qE '^ +- name: Execute [A-Za-z][A-Za-z ]* CLI$' "$lock" || { STEP_NAME_OK=0; echo "  ${lock##*/}: no 'Execute <engine> CLI' step" >&2; }
+done
+if [ "$STEP_NAME_OK" -eq 1 ]; then
+  PASS=$((PASS + 1))
+else
+  FAIL=$((FAIL + 1))
+  echo "FAIL: an agent lock's agent step is not named 'Execute <engine> CLI', the pinned metrics contract" >&2
+fi
 
 # A split's safe outputs are normalised before the handlers read them: temporary IDs gh-aw would
 # reject are renamed and children a half-finished run filed are reused (FR-114, loopscope #265).
