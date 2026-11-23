@@ -1,4 +1,4 @@
-// Managed by @software-factory-dev/cli@0.5.1. Source: loops/scripts/compile-agent-workflows.mjs. Profile digest: ebdd90dc5c5b. Update with `workflows update --force`; consumer edits may be overwritten.
+// Managed by @software-factory-dev/cli@0.5.1. Source: loops/scripts/compile-agent-workflows.mjs. Profile digest: ccaabc0b4a1d. Update with `workflows update --force`; consumer edits may be overwritten.
 
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";

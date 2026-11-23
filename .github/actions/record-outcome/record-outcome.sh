@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/record-outcome/record-outcome.sh. Profile digest: ebdd90dc5c5b. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/record-outcome/record-outcome.sh. Profile digest: ccaabc0b4a1d. Update with `workflows update --force`; consumer edits may be overwritten.
 #
 # One line per job saying what happened and why (FR-058).
 #
@@ -85,6 +85,9 @@ readonly REASONS=(
   # checked out, so it cannot call a local action.
   runners-online
   runner-unverifiable
+  # The worker's activation failed, so no agent ran and no later job could release the issue
+  # (agentic-loop-evals #34, 23/11/2026).
+  activation-failed
   not-authorised
   invalid-input
 )

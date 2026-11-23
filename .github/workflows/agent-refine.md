@@ -1,5 +1,5 @@
 ---
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/workflows/agent-refine.md. Profile digest: ebdd90dc5c5b. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/workflows/agent-refine.md. Profile digest: ccaabc0b4a1d. Update with `workflows update --force`; consumer edits may be overwritten.
 env:
   REPO_RULES: "Install with the lockfile frozen; an install that resolves a different tree is not reproducing the change under review. Run scripts through pnpm rather than npx, or a second package manager's lockfile appears in the diff."
   PLAN_EXPLORE_SKILL: plan-explore
@@ -267,6 +267,69 @@ jobs:
         with:
           token: ${{ steps.app-token.outputs.token }}
           ref: ${{ github.event.repository.default_branch }}
+  # gh-aw makes every custom job depend on activation, so when activation itself fails --
+  # a runtime import missing from the checkout, a secret it cannot read -- eligibility, reserve,
+  # the agent and the incomplete job below all skip, and nothing removes the reservation the
+  # authorisation added: the issue sat as `bot-working` with no word on it (agentic-loop-evals #34,
+  # 23/11/2026, the first opencode run on gh-aw v1.3.1). A failed activation is a configuration
+  # fault that a retry repeats, so the issue goes to a person with the run that says why.
+  activation_failed:
+    needs: [activation]
+    if: always() && needs.activation.result == 'failure'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Checkout workflow actions
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Create bot token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ secrets.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-issues: write
+          permission-pull-requests: write
+          permission-actions: write
+          permission-workflows: write
+      - name: Release the issue
+        uses: ./.github/actions/remove-issue-labels
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          issue-number: ${{ inputs.issue-number }}
+          labels: |
+            ${{ env.WORKING_LABEL }}
+            ${{ env.REFINE_LABEL }}
+      - name: Hand it to a person
+        uses: ./.github/actions/add-issue-labels
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          issue-number: ${{ inputs.issue-number }}
+          labels: ${{ env.REVIEW_LABEL }}
+      - name: Say why
+        uses: ./.github/actions/create-issue-comment
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          issue-number: ${{ inputs.issue-number }}
+          body: |
+            ${{ env.REFINE_MARKER }}
+            The refine run stopped before the agent started: the workflow's activation failed, which is a fault in how this repository's workflows are installed or configured, not in the issue, and a retry would stop the same way. The run's activation job says what it could not do. Once that is fixed, remove `${{ env.REVIEW_LABEL }}` and add `${{ env.REFINE_LABEL }}` again.
+            [View this workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+      - name: Record the outcome
+        if: always()
+        uses: ./.github/actions/record-outcome
+        with:
+          outcome: handed-to-human
+          reason: activation-failed
+          route: refine
+          subject: "#${{ inputs.issue-number }}"
+          detail: "The run's activation failed before the agent started; the issue is released and handed to a person."
   incomplete:
     needs: [activation, agent, safe_outputs, validate_output]
     if: >
