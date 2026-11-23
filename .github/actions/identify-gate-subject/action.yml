@@ -1,4 +1,4 @@
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/identify-gate-subject/action.yml. Profile digest: ede943dfa18d. Update with workflows update --force; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/identify-gate-subject/action.yml. Profile digest: ebdd90dc5c5b. Update with workflows update --force; consumer edits may be overwritten.
 name: Identify gate subject
 description: Confirm the pull request is one we authored, resolve the issue it closes, and check that issue carries the required label.
 inputs:
@@ -36,7 +36,26 @@ inputs:
     description: Label the closing issue must carry. Empty disables the check.
     required: false
     default: ''
+  shadow-human-pull-requests:
+    description: >-
+      `true` when this repository runs the gate in shadow on pull requests people open
+      (feature 007 X11, FR-027). Such a pull request is then a subject in advise-only mode
+      rather than refused; `false` keeps refusing it.
+    required: false
+    default: 'false'
+  human-only:
+    description: >-
+      `true` when the router sent this run for a person's pull request only: the green-CI
+      shadow route. A bot pull request's verdict reaches the gate through CI's own dispatch,
+      so a bot pull request here is refused rather than gated twice.
+    required: false
+    default: 'false'
 outputs:
+  advise:
+    description: >-
+      `true` when the subject is a person's pull request assessed in shadow: the gate gives a
+      verdict and findings in one advisory comment and changes nothing (FR-027).
+    value: ${{ steps.identify.outputs.advise }}
   found:
     description: Whether a valid gate subject was found.
     value: ${{ steps.identify.outputs.found }}
@@ -106,6 +125,8 @@ runs:
         LINKED_ISSUE: ${{ inputs.linked-issue }}
         REQUIRE_LABEL: ${{ inputs.require-label }}
         STAGE_LABELS: ${{ inputs.stage-labels }}
+        SHADOW_HUMAN: ${{ inputs.shadow-human-pull-requests }}
+        HUMAN_ONLY: ${{ inputs.human-only }}
       run: |
         set -euo pipefail
 
@@ -137,16 +158,55 @@ runs:
         }
 
         pr="$(gh pr view "$PR_NUMBER" --repo "$REPO" \
-          --json state,author,body,baseRefName)"
+          --json state,author,body,baseRefName,isCrossRepository)"
 
         [ "$(jq -r '.state' <<<"$pr")" = "OPEN" ] || none "PR #$PR_NUMBER is not open"
 
         # Use GitHub's bot flag because App login formats differ across APIs.
-        if [ "$(jq -r '.author.is_bot' <<<"$pr")" != "true" ]; then
-          none "PR #$PR_NUMBER was authored by $(jq -r '.author.login' <<<"$pr"), a human."
+        #
+        # A person's pull request is not this loop's to act on. With shadow mode on it is still
+        # assessed, advise-only: the gate gives its verdict and findings in one comment and
+        # changes nothing, so its judgement can be compared with the people's (FR-027).
+        advise=false
+        if [ "$(jq -r '.author.is_bot' <<<"$pr")" = "true" ]; then
+          # The shadow route -- a green CI run on a person's pull request -- is for people's
+          # pull requests only. A bot pull request's verdict reaches the gate through CI's own
+          # dispatch, and gating it here too would assess one verdict twice.
+          if [ "${HUMAN_ONLY:-false}" = "true" ]; then
+            none "PR #$PR_NUMBER was opened by this loop; its CI verdict reaches the gate through CI's own dispatch, not the shadow route."
+          fi
+        else
+          if [ "${SHADOW_HUMAN:-false}" != "true" ]; then
+            none "PR #$PR_NUMBER was authored by $(jq -r '.author.login' <<<"$pr"), a human."
+          fi
+          # The agent starts on the head branch, which a fork's pull request does not have here.
+          if [ "$(jq -r '.isCrossRepository // false' <<<"$pr")" = "true" ]; then
+            none "PR #$PR_NUMBER comes from a fork, which the gate cannot check out; shadow mode assesses same-repository pull requests only."
+          fi
+          advise=true
         fi
+        echo "advise=$advise" >> "$GITHUB_OUTPUT"
 
         echo "base=$(jq -r '.baseRefName // ""' <<<"$pr")" >> "$GITHUB_OUTPUT"
+
+        # shellcheck source=../resolve-pr-issue/resolve-pr-issue.sh
+        . "${GITHUB_ACTION_PATH}/../resolve-pr-issue/resolve-pr-issue.sh"
+
+        if [ "$advise" = true ]; then
+          # Advise only: no label is required and none is touched, the assessment goes on the
+          # pull request, and an issue the pull request names is read for its acceptance
+          # criteria and nothing else. A person's pull request is never a promotion, whatever
+          # its body says: the marker is this loop's, and anyone can type it (FR-027).
+          issue="$LINKED_ISSUE"
+          [ -n "$issue" ] || issue="$(pr_issue "$PR_NUMBER")"
+          {
+            echo "promotion=false"
+            echo "issues<<EOF_ISSUES"
+            printf '%s\n' "$issue"
+            echo "EOF_ISSUES"
+            echo "comment-target=$PR_NUMBER"
+          } >> "$GITHUB_OUTPUT"
+        else
 
         # Is this a promotion? The marker is written by the promotion route and by nothing
         # else, so it is the question's whole answer. Read before the issue, because under
@@ -156,9 +216,6 @@ runs:
         promotion=false
         if grep -qE '<!-- promotion-pr: [^:]+: [^ ]+ -->' <<<"$body"; then promotion=true; fi
         echo "promotion=$promotion" >> "$GITHUB_OUTPUT"
-
-        # shellcheck source=../resolve-pr-issue/resolve-pr-issue.sh
-        . "${GITHUB_ACTION_PATH}/../resolve-pr-issue/resolve-pr-issue.sh"
 
         # The classifier resolved this once already and passed it down. When it did not --
         # a dispatch, a label event -- the same rule answers here rather than a second
@@ -230,6 +287,9 @@ runs:
           done <<< "$issues"
         fi
 
+        # The end of the loop's own subject rules; the advise branch above skips them all.
+        fi
+
         # Fetch CI conclusion if not provided (label-triggered runs), and the run id
         # whenever the caller did not supply one -- a conclusion with no run id is what the
         # belt and the CI template send, and it left the agent with no logs at all (T247).
@@ -263,7 +323,9 @@ runs:
           echo "run-id=$ci_run_id"
         } >> "$GITHUB_OUTPUT"
 
-        if [ "$promotion" = true ]; then
+        if [ "$advise" = true ]; then
+          echo "PR #$PR_NUMBER is a person's; assessing it advise-only${issue:+ against #$issue}; CI concluded $ci_conclusion"
+        elif [ "$promotion" = true ]; then
           echo "PR #$PR_NUMBER promotes $(printf '%s' "$issues" | grep -c '[0-9]') issue(s) into '$base'; CI concluded $ci_conclusion"
         else
           echo "PR #$PR_NUMBER closes #$issue; CI concluded $ci_conclusion"

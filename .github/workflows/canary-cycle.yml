@@ -1,4 +1,4 @@
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/templates/canary/canary-cycle.yml. Profile digest: ede943dfa18d. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/templates/canary/canary-cycle.yml. Profile digest: ebdd90dc5c5b. Update with `workflows update --force`; consumer edits may be overwritten.
 name: Canary cycle
 
 # The canary: once a day, one fixed trivial change carried by the loop from an issue to the
@@ -16,6 +16,12 @@ on:
   schedule:
     - cron: "17 4 * * *"
   workflow_dispatch:
+    inputs:
+      red-team:
+        description: "Also run the monthly red team now: a malicious pull request the merge gate, in shadow, must hand to a person"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -77,7 +83,14 @@ jobs:
           MATRIX_FLOOR: ${{ vars.CANARY_MATRIX_FLOOR || '0' }}
           RUN_ID: ${{ github.run_id }}
           ACTIONS_DIR: ${{ github.workspace }}/.github/actions
+          # The monthly red team (feature 007 X11): on the first of the month, or when a dispatch
+          # asks for it. It needs the gate in shadow on people's pull requests.
+          RED_TEAM: ${{ inputs.red-team && 'force' || 'auto' }}
+          SHADOW_HUMAN: "false"
         run: bash .github/canary/canary-cycle.sh
+      # How often the gate in shadow agreed with the people who decided the same pull requests
+      # (feature 007 X11, FR-027). A report, not an assertion: it goes to the run's summary and
+      # does not change the cycle's outcome.
       # The first App token is over an hour old by now on a chain; the steps below write.
       - name: Create a fresh bot token
         if: always()

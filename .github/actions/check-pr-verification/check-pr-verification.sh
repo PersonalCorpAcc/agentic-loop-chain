@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/check-pr-verification/check-pr-verification.sh. Profile digest: ede943dfa18d. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/check-pr-verification/check-pr-verification.sh. Profile digest: ebdd90dc5c5b. Update with `workflows update --force`; consumer edits may be overwritten.
 #
 # Proof of work (feature 007 X09): does the pull request say what was tested and what was not?
 # A body with a `## Verification` heading and both a `Tested:` and a `Not tested:` line passes;
