@@ -1,4 +1,4 @@
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/sync-stages/action.yml. Profile digest: ebdd90dc5c5b. Update with workflows update --force; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/sync-stages/action.yml. Profile digest: ccaabc0b4a1d. Update with workflows update --force; consumer edits may be overwritten.
 name: Sync stages
 description: >
   Carry content that arrived on a later stage back down the chain, as a pull request per

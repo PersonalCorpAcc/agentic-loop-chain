@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/verify-route-matrix/verify-route-matrix.sh. Profile digest: ebdd90dc5c5b. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/verify-route-matrix/verify-route-matrix.sh. Profile digest: ccaabc0b4a1d. Update with `workflows update --force`; consumer edits may be overwritten.
 # Exercise the router's real classifier. This sources classify-route.sh rather than
 # restating it, so a change to the route table cannot pass here by being copied twice.
 #
@@ -335,7 +335,9 @@ fi
   # and the merge happens when the rule is satisfied.
   grep -qF -e "- name: Arm auto-merge when a rule is holding it" "$MERGE_GATE_WORKER_MD" ||
     { GATE_POLICY_OK=0; echo "FAIL: the merge gate has no arming step, so a protected repository would hand every bot pull request to a person" >&2; }
-  grep -q -- '--auto' "$MERGE_GATE_WORKER_MD" ||
+  # The arming itself is the step's script (FR-086).
+  { grep -q 'run: bash ./.github/actions/merge-gate/arm-auto-merge.sh' "$MERGE_GATE_WORKER_MD" &&
+    grep -q -- '--auto' "${HERE}/../merge-gate/arm-auto-merge.sh" 2>/dev/null; } ||
     { GATE_POLICY_OK=0; echo "FAIL: the merge gate never arms auto-merge; the deferred path is what merges a pull request a rule is holding" >&2; }
   # And it must not ask to be exempted from the rules it is waiting on.
   if grep -qiE 'bypass_actors|bypass_mode' "$MERGE_GATE_WORKER_MD"; then
@@ -538,6 +540,11 @@ else
     resolve-merge-base bot-approve detect-pr-conflicts reconcile-bot-pr-runs audit-close cleanup-artifacts validate; do
     block="$(tr -d '\r' <"$ROUTER_YML" | sed -n "/^  ${job}:\$/,/^  [a-z][a-z0-9-]*:\$/p")"
     [ -n "$block" ] || continue
+    # A step that runs a managed script says what it did there (FR-086), so the script is
+    # read as part of the job.
+    while IFS= read -r called; do
+      [ -f "${HERE}/../${called}" ] && block="${block}"$'\n'"$(tr -d '\r' <"${HERE}/../${called}")"
+    done < <(grep -oE 'bash \./\.github/actions/[A-Za-z0-9_./-]+\.sh' <<<"$block" | sed 's|^bash \./\.github/actions/||')
     if ! grep -q 'record-outcome' <<<"$block" && ! grep -q 'outcome=' <<<"$block"; then
       OUTCOME_OK=0
       echo "FAIL: the ${job} job writes no outcome line, so a run in which it did nothing is indistinguishable from one in which it did something" >&2
@@ -1304,12 +1311,17 @@ if [ "$PENDING_OK" -eq 1 ]; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); fi
 # worked for half an hour and then failed produced an answer that was wrong, and repeating it
 # costs the fleet the same half hour to be wrong again.
 IMPLEMENT_RETRY_OK=1
-for needle in 'RETRY_UNDER_MINUTES' 'ATTEMPT_MARKER' 'attempts_so_far' 'operation=implement'; do
+for needle in 'RETRY_UNDER_MINUTES' 'ATTEMPT_MARKER' 'attempts_so_far' 'bash ./.github/actions/retry-pending/redispatch-implement.sh'; do
   grep -qF "$needle" "$IMPLEMENT_WORKER_MD" || {
     IMPLEMENT_RETRY_OK=0
     echo "FAIL: implement worker lost its retry belt: no '$needle'" >&2
   }
 done
+# The re-dispatch itself is the script's (FR-086).
+grep -qF 'operation=implement' "${HERE}/../retry-pending/redispatch-implement.sh" 2>/dev/null || {
+  IMPLEMENT_RETRY_OK=0
+  echo "FAIL: the implement retry no longer re-dispatches the implement operation" >&2
+}
 # Park and retry are mutually exclusive: the retry path must never add the review label, and
 # the park path must never re-dispatch.
 grep -A3 'Flag for human review' "$IMPLEMENT_WORKER_MD" | grep -q "retry != 'true'" ||
@@ -1427,8 +1439,12 @@ engine_scan_files() {
 
 for variable in $FOREIGN_CREDENTIAL_VARS; do
   offenders=""
+  # A repository secret may carry any name, another engine's variable's included: an
+  # OpenAI-compatible gateway reached with a key stored as ANTHROPIC_API_KEY is mapped onto
+  # OPENAI_API_KEY, which is what this engine reads (feature 007 T113). So `secrets.<name>` is not
+  # a use of the variable; the variable a file sets or reads is.
   while read -r scanned; do
-    if grep -qF "$variable" "$scanned"; then offenders="${offenders} ${scanned##*/}"; fi
+    if sed -E 's/secrets\.[A-Za-z0-9_]+//g' "$scanned" | grep -qF "$variable"; then offenders="${offenders} ${scanned##*/}"; fi
   done < <(engine_scan_files)
 
   if [ -z "$offenders" ]; then
@@ -1570,10 +1586,14 @@ fi
 
 # A diff holding a terminal escape sequence reaches the agent: gh 2.97 refuses to print one
 # without --allow-escape-sequences, and the gate crashed on loopscope #348 (22/11/2026).
-for worker in "$MERGE_GATE_WORKER_MD" "${HERE}/../../workflows/agent-apply-review.md"; do
+# Both fetches are scripts the workers run (FR-086).
+for pair in "${MERGE_GATE_WORKER_MD}:merge-gate/fetch-gate-context.sh" \
+  "${HERE}/../../workflows/agent-apply-review.md:fetch-review-context/fetch-review-context.sh"; do
+  worker="${pair%:*}"; fetch="${HERE}/../${pair##*:}"
   [ -f "$worker" ] || continue
-  if grep -q 'gh pr diff "\$PR" --repo "\$REPO" "\${diff_flags\[@\]}"' "$worker" &&
-    ! grep -q 'gh pr diff "\$PR" --repo "\$REPO" >' "$worker"; then
+  if grep -qF "run: bash ./.github/actions/${pair##*:}" "$worker" &&
+    grep -q 'gh pr diff "\$PR" --repo "\$REPO" "\${diff_flags\[@\]}"' "$fetch" 2>/dev/null &&
+    ! grep -q 'gh pr diff "\$PR" --repo "\$REPO" >' "$fetch"; then
     PASS=$((PASS + 1))
   else
     FAIL=$((FAIL + 1))

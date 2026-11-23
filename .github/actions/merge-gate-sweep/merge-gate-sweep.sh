@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/merge-gate-sweep/merge-gate-sweep.sh. Profile digest: ebdd90dc5c5b. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/merge-gate-sweep/merge-gate-sweep.sh. Profile digest: ccaabc0b4a1d. Update with `workflows update --force`; consumer edits may be overwritten.
 # shellcheck shell=bash
 #
 # What the router's two merge-gate sweeps share (feature 007 WF-13, FR-036). The conflict
