@@ -110,6 +110,8 @@ jobs:
           subject: '-'
           detail: "${{ job.status == 'success' && 'The audit ran and its findings are on the audit issue.' || 'The audit conclusion did not finish; the step log says where it stopped.' }}"
 
+# Each run's OpenTelemetry GenAI spans -- duration, tokens, model, outcome; never prompt or
+# response content -- go to the profile's OTLP endpoint (feature 007 X14, FR-074).
 safe-outputs:
   # A failed run is already a red run. An issue per failure buries the real backlog
   # under noise nobody closes.
@@ -123,6 +125,10 @@ timeout-minutes: 45
 
 1. Call skill("${{ env.REPO_AUDIT_SKILL }}"), then run `/${{ env.REPO_AUDIT_COMMAND }}` as a read-only audit of this
    repository. Do not modify any file, do not commit, and do not push.
+
+   The agent kit's skills are files at `.agents/skills/<name>/SKILL.md` and its commands at
+   `.opencode/commands/<name>.md`. Where your tools have no skill or command by that name, read
+   that file and follow it; it is the same instruction. Do not stop or search for it elsewhere.
 
   2. Apply repository documentation and established conventions while auditing. Focus on
      concrete defects and avoid recommendations that weaken security, tests, or checks.
