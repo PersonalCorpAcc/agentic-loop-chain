@@ -359,6 +359,11 @@ steps:
 # Each run's OpenTelemetry GenAI spans -- duration, tokens, model, outcome; never prompt or
 # response content -- go to the profile's OTLP endpoint (feature 007 X14, FR-074).
 safe-outputs:
+  # Staged, as the merge gate is: the conclude job applies the push and the comment with the
+  # App token. Unstaged, gh-aw applied them itself with the workflow token -- a push by
+  # github-actions[bot], whose CI run waits for an approval no event asks the router for (an hour
+  # on loopscope #383, 23/11/2026) -- and conclude then posted the same comment a second time.
+  staged: true
   # A failed run is already a red run. An issue per failure buries the real backlog
   # under noise nobody closes.
   report-failure-as-issue: false
