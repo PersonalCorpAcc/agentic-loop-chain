@@ -86,6 +86,13 @@ jobs:
         with:
           client-id: ${{ secrets.BOT_APP_ID }}
           private-key: ${{ secrets.BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-issues: write
+          permission-pull-requests: write
+          permission-actions: write
+          permission-workflows: write
       # No apply-agent-output here. The safe_outputs job already created the issue and
       # exposes its number; calling the action with create-issues would file a second copy
       # of the same report. It was only needed while staged: true suppressed the native
