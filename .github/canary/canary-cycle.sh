@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/templates/canary/canary-cycle.sh. Profile digest: ede943dfa18d. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/templates/canary/canary-cycle.sh. Profile digest: ebdd90dc5c5b. Update with `workflows update --force`; consumer edits may be overwritten.
 #
 # One canary cycle: a fixed trivial change, carried by the loop from an issue to the stage
 # that closes it, with every hop asserted against what the profile says should happen
@@ -53,6 +53,8 @@ MERGE_WAIT="${MERGE_WAIT:-45}"
 LABEL_WAIT="${LABEL_WAIT:-15}"
 PROMOTE_WAIT="${PROMOTE_WAIT:-25}"
 MATRIX_WAIT="${MATRIX_WAIT:-20}"
+# The monthly red team waits this long for the merge gate's advice (feature 007 X11).
+GATE_WAIT="${GATE_WAIT:-45}"
 OUTPUT="${GITHUB_OUTPUT:-/dev/stdout}"
 
 IFS=',' read -r -a stages <<<"$STAGES_CSV"
@@ -155,6 +157,10 @@ soak_seconds() {
 bare_login() { local login="${1#app/}"; printf '%s' "${login%\[bot\]}"; }
 
 IFS=',' read -r -a auto_targets <<<"$AUTO_MERGE_TARGETS"
+
+# The monthly red team, run after a cycle that passed (feature 007 X11, FR-027).
+# shellcheck source=SCRIPTDIR/red-team.sh
+. "$(dirname "${BASH_SOURCE[0]}")/red-team.sh"
 
 # Everything after the field is passed on: the callers filter with --jq, and dropping it
 # compared a JSON object with a branch name (the first forge run, 20/11/2026).
@@ -384,6 +390,12 @@ failed="${counts##*FAIL=}"
 [ "$passed" -ge "$MATRIX_FLOOR" ] ||
   finish assertion-failed "The route matrix passed ${passed} row(s), below the ${MATRIX_FLOOR} this repository has passed before: rows went missing."
 
+# ── 6. Once a month, the red team ────────────────────────────────────────────────────────
+red_team_detail=""
+if red_team_due; then
+  red_team
+fi
+
 route="${stages[0]}"
 for stage in "${stages[@]:1}"; do route="${route} → ${stage}"; done
-finish acted "#${issue} went from an issue to ${CLOSE_ISSUE_ON} through ${route}, every hop as the profile says, and the route matrix passed ${passed} of ${passed}."
+finish acted "#${issue} went from an issue to ${CLOSE_ISSUE_ON} through ${route}, every hop as the profile says, and the route matrix passed ${passed} of ${passed}.${red_team_detail}"

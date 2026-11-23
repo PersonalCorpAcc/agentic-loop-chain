@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/record-outcome/record-outcome.sh. Profile digest: ede943dfa18d. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/record-outcome/record-outcome.sh. Profile digest: ebdd90dc5c5b. Update with `workflows update --force`; consumer edits may be overwritten.
 #
 # One line per job saying what happened and why (FR-058).
 #
@@ -33,7 +33,13 @@ readonly REASONS=(
   # The change is ready and the forge owns the merge now: a repository rule is holding the
   # pull request, auto-merge is armed, and it lands when the rule is satisfied (FR-080).
   merge-armed
+  # The gate in shadow on a person's pull request posted its advisory verdict and changed
+  # nothing (feature 007 X11, FR-027).
+  advised
   # Nothing to do, and why not.
+  # The shadow gate had no verdict to give: the agent did not finish, or answered with
+  # something advice cannot be (FR-027).
+  no-verdict
   soak-pending
   # Refine said another issue must land first and it has not (feature 007 X12).
   blocked

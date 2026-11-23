@@ -1,5 +1,5 @@
 ---
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/workflows/agent-apply-review.md. Profile digest: ede943dfa18d. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/workflows/agent-apply-review.md. Profile digest: ebdd90dc5c5b. Update with `workflows update --force`; consumer edits may be overwritten.
 env:
   # Printed by the prompt as the verification block. Consumers set their own commands.
   VERIFY_COMMANDS: "pnpm install --frozen-lockfile && pnpm run build && pnpm run test"
@@ -11,6 +11,9 @@ env:
   REVIEW_LABEL: review
   PR_PENDING_LABEL: pr-pending
   REVIEW_MARKER: "<!-- agent-apply-review -->"
+  # The merge gate's own change request, under `gate.mode: review`: the one review by a bot this
+  # worker answers (feature 007 X08, FR-024). The gate writes the same marker.
+  GATE_REVIEW_MARKER: "<!-- agent-merge-gate-review -->"
   INCOMPLETE_COMMENT: "Automated review feedback ended without an outcome. The issue remains for a retry."
   ISSUE_CONTEXT_PATH: /tmp/gh-aw/agent/issue-context.json
   GH_AW_ALLOWED_BOTS: "personalcorpacc-agentic-loop[bot],github-actions[bot]"
@@ -87,6 +90,7 @@ jobs:
           PR: ${{ inputs.pr-number }}
           LINKED_ISSUE: ${{ inputs.linked-issue }}
           RESOLVED_ISSUE: ${{ steps.resolve.outputs.issue }}
+          GATE_REVIEW_MARKER: ${{ env.GATE_REVIEW_MARKER }}
         run: bash ./.github/actions/confirm-review-subject/confirm-review-subject.sh
       - name: Record the outcome
         if: always()
@@ -448,7 +452,12 @@ timeout-minutes: 45
 
 4. Work out which items are genuinely actionable and still outstanding. Skip anything already
    addressed by a later commit, anything a bot wrote, anything from the pull request author,
-   and anything that is a question rather than a request. You must account for every unresolved
+   and anything that is a question rather than a request. One bot's request is not skipped: the
+   merge gate's change request, whose body starts with `${{ env.GATE_REVIEW_MARKER }}`. Answer it
+   as you would a person's: address every `[blocker]` and `[major]` finding it lists, and a
+   `[minor]` one only where it is trivial and safe. Where it says the branch conflicts with its
+   base, merge the base branch it names into this branch and resolve every conflict; never
+   rebase, because the push is fast-forward only. You must account for every unresolved
    human review thread by its `PRRT_...` ID, and for the change request in
    `change-requests.json`, if there is one, by its `PRR_...` ID. Do not claim feedback was implemented when no branch
    change is needed: that requires reviewer confirmation.
