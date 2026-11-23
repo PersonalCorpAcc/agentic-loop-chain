@@ -468,7 +468,10 @@ jobs:
   # 23/11/2026, the first opencode run on gh-aw v1.3.1). A failed activation is a configuration
   # fault that a retry repeats, so the issue goes to a person with the run that says why.
   activation_failed:
-    needs: [activation]
+    # `agent` among the needs, though it never runs when this does: gh-aw otherwise adds this job
+    # to the agent's own needs, and a job skipped on a good activation then skipped the agent
+    # on every run (the PR 201 installs on all three canaries, 23/11/2026).
+    needs: [activation, agent]
     if: always() && needs.activation.result == 'failure'
     runs-on: ubuntu-24.04
     permissions:
