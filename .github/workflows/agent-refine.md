@@ -84,6 +84,13 @@ jobs:
         with:
           client-id: ${{ secrets.BOT_APP_ID }}
           private-key: ${{ secrets.BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-issues: write
+          permission-pull-requests: write
+          permission-actions: write
+          permission-workflows: write
       # GITHUB_TOKEN on purpose. A label applied by the app raises a labeled event, and the
       # classifier routes bot-working straight back into this same worker: the second run
       # queues behind this one and then executes, doing the work twice. Nothing needs to see
@@ -152,6 +159,13 @@ jobs:
         with:
           client-id: ${{ secrets.BOT_APP_ID }}
           private-key: ${{ secrets.BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-issues: write
+          permission-pull-requests: write
+          permission-actions: write
+          permission-workflows: write
       # No apply-agent-output here. safe_outputs already creates the split children, links
       # them as sub-issues of the parent and rewrites the parent body; running the action too
       # filed a second unlinked, unlabelled copy of every child.
@@ -277,6 +291,13 @@ jobs:
         with:
           client-id: ${{ secrets.BOT_APP_ID }}
           private-key: ${{ secrets.BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-issues: write
+          permission-pull-requests: write
+          permission-actions: write
+          permission-workflows: write
       # The daily AI-credit allowance and a provider outage pass on their own, so neither is a
       # person's: the issue keeps `refine`, and the hourly sweep retries it (FR-113). This job
       # used to add `review` and promise a retry that nothing made (loopscope #265 and #268).
@@ -304,7 +325,7 @@ jobs:
           issue-number: ${{ inputs.issue-number }}
           body: |
             <!-- agent-retry-pending: refine ${{ steps.classify.outputs.kind }} -->
-            ${{ steps.classify.outputs.kind == 'credits' && format('The agent did not start: this repository has used its daily AI-credit allowance ({0} of {1}; the `GH_AW_DEFAULT_MAX_DAILY_AI_CREDITS` repository variable sets it).', needs.activation.outputs.daily_ai_credits_total_effective_tokens, needs.activation.outputs.daily_ai_credits_threshold) || steps.classify.outputs.transient == 'true' && format('Refinement ended after {0} minutes on a temporary answer from the model provider (a challenge page or a server error), not a refusal.', steps.classify.outputs.minutes) || format('Refinement ended after {0} minutes without an outcome, which is what a provider outage looks like.', steps.classify.outputs.minutes) }} Nothing is wrong with the issue. It keeps `${{ env.REFINE_LABEL }}`, and the hourly sweep starts it again.
+            ${{ steps.classify.outputs.kind == 'credits' && format('The agent did not start: this repository has used its daily AI-credit allowance ({0} of {1}; the `GH_AW_DEFAULT_MAX_DAILY_AI_CREDITS` repository variable sets it).', needs.activation.outputs.daily_ai_credits_total, needs.activation.outputs.daily_ai_credits_threshold) || steps.classify.outputs.transient == 'true' && format('Refinement ended after {0} minutes on a temporary answer from the model provider (a challenge page or a server error), not a refusal.', steps.classify.outputs.minutes) || format('Refinement ended after {0} minutes without an outcome, which is what a provider outage looks like.', steps.classify.outputs.minutes) }} Nothing is wrong with the issue. It keeps `${{ env.REFINE_LABEL }}`, and the hourly sweep starts it again.
             [View this workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
       - name: Flag for human review
         if: steps.classify.outputs.kind != 'credits' && steps.classify.outputs.kind != 'outage'
@@ -322,7 +343,7 @@ jobs:
           body: |
             ${{ env.REFINE_MARKER }}
             ${{ env.INCOMPLETE_COMMENT }}
-            ${{ needs.activation.outputs.daily_ai_credits_exceeded == 'true' && format('The agent did not start: this repository has used its daily AI-credit allowance ({0} of {1}; the `GH_AW_DEFAULT_MAX_DAILY_AI_CREDITS` repository variable sets it). Work resumes once the day''s usage is back under it; raise the variable to allow more.', needs.activation.outputs.daily_ai_credits_total_effective_tokens, needs.activation.outputs.daily_ai_credits_threshold) || '' }}
+            ${{ needs.activation.outputs.daily_ai_credits_exceeded == 'true' && format('The agent did not start: this repository has used its daily AI-credit allowance ({0} of {1}; the `GH_AW_DEFAULT_MAX_DAILY_AI_CREDITS` repository variable sets it). Work resumes once the day''s usage is back under it; raise the variable to allow more.', needs.activation.outputs.daily_ai_credits_total, needs.activation.outputs.daily_ai_credits_threshold) || '' }}
             [View this workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
       # A run ending is an event GitHub always delivers; its schedules it does not (FR-116). So
       # each terminal job starts the reconcile belt -- queued work, cleared blockers, retries --
