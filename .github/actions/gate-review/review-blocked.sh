@@ -17,9 +17,17 @@
 set -euo pipefail
 
 : "${REPO:?review-blocked: REPO is required}"
-: "${PR:?review-blocked: PR is required}"
 marker="${GATE_REVIEW_MARKER:-<!-- agent-merge-gate-review -->}"
 out="${GITHUB_OUTPUT:-/dev/stdout}"
+
+# No subject -- a pull request the gate does not assess (another author, a probe, a sync) -- is
+# nothing to block. Requiring a number here turned every such dispatch into a red run instead of
+# a quiet no-action (loopscope #2, #123, #124, #238, 23/11/2026).
+if [ -z "${PR:-}" ]; then
+  echo "review_blocked=false" >>"$out"
+  echo "No pull request to read: nothing to block."
+  exit 0
+fi
 
 decision=""
 for _ in 1 2 3; do
