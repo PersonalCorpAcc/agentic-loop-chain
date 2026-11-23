@@ -557,7 +557,9 @@ jobs:
           REFUSAL_SIGNATURE: ${{ env.REFUSAL_SIGNATURE }}
           CREDITS_EXCEEDED: ${{ needs.activation.outputs.daily_ai_credits_exceeded || 'false' }}
         run: bash ./.github/actions/retry-pending/classify-incomplete.sh
-      # An outage is retried at once, up to the park attempt. The daily AI-credit allowance is
+      # An outage is retried at once, up to the park attempt; so is a run of any length that
+      # ended on the provider's temporary answer, which the classifier reports as an outage
+      # (loopscope #363: fifteen minutes in, a challenge page was flagged for a person). The daily AI-credit allowance is
       # not an attempt -- no agent ran -- so it is deferred to the hourly sweep instead, with the
       # issue kept and no person called (FR-113). Everything else is a person's.
       - name: Decide whether this failure is worth repeating
@@ -592,7 +594,7 @@ jobs:
           issue-number: ${{ inputs.issue-number }}
           body: |
             ${{ env.ATTEMPT_MARKER }}
-            Attempt ${{ steps.decide.outputs.next }} of ${{ env.MAX_ATTEMPTS }} ended after ${{ steps.decide.outputs.minutes }} minutes, before the run could produce an answer. That is what a provider outage looks like, so this is being retried.
+            Attempt ${{ steps.decide.outputs.next }} of ${{ env.MAX_ATTEMPTS }} ended after ${{ steps.decide.outputs.minutes }} minutes, before the run could produce an answer. ${{ steps.classify.outputs.transient == 'true' && 'Its last answer from the model provider was a temporary one (a challenge page or a server error), not a refusal' || 'That is what a provider outage looks like' }}, so this is being retried.
             The issue keeps `implement`.
             [View this workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
       # The one failure that must not be retried, and the only one whose fix is a person
@@ -714,6 +716,7 @@ runs-on-slim: ubuntu-24.04
 
 engine:
   id: claude
+  args: ["--settings", "/tmp/gh-aw/agent/claude-settings.json"]
   # The agent job's own concurrency group. The compiler's default is one group per workflow,
   # so every implement agent in the repository queued behind the last whatever the router
   # allowed; per issue, the router's implement lanes are the only limit (20/11/2026).
@@ -739,6 +742,19 @@ steps:
       token: ${{ github.token }}
       issue-number: ${{ inputs.issue-number }}
       output-path: ${{ env.ISSUE_CONTEXT_PATH }}
+  # Under an engine with a stop hook the session cannot finish while the verify command fails;
+  # it is refused three times at most, then may end, and the gate still checks CI (feature 007
+  # X10, FR-026). The settings file is the engine's; the hook is a managed script.
+  - name: Hand the verify command to the session's stop hook
+    env:
+      VERIFY: ${{ env.VERIFY_COMMANDS }}
+    run: |
+      set -euo pipefail
+      mkdir -p /tmp/gh-aw/agent
+      printf '%s\n' "$VERIFY" > /tmp/gh-aw/agent/verify-command
+      cat > /tmp/gh-aw/agent/claude-settings.json <<'JSON'
+      {"hooks":{"Stop":[{"hooks":[{"type":"command","command":"bash .github/actions/verify-on-stop/verify-on-stop.sh","timeout":1200}]}]}}
+      JSON
 
 # The pipeline refuses to start without its specification tool, and it is right to: every phase
 # after exploration writes through it. It used to arrive only through the OpenCode engine's own
@@ -772,6 +788,8 @@ pre-agent-steps:
       npm install -g "@fission-ai/openspec@1.8.0"
       openspec --version
 
+# Each run's OpenTelemetry GenAI spans -- duration, tokens, model, outcome; never prompt or
+# response content -- go to the profile's OTLP endpoint (feature 007 X14, FR-074).
 safe-outputs:
   # A failed run is already visible as a red run. An issue per failure buries the
   # real backlog under noise that nobody closes.
@@ -861,6 +879,10 @@ timeout-minutes: 90
    **If the trivial marker is absent (standard path):**
 
    Run the pipeline capability once, in its unattended mode, and let it own the work:
+
+   The agent kit's skills are files at `.agents/skills/<name>/SKILL.md` and its commands at
+   `.opencode/commands/<name>.md`. Where your tools have no skill or command by that name, read
+   that file and follow it; it is the same instruction. Do not stop or search for it elsewhere.
 
    ```
    /${{ env.PLAN_RUN_COMMAND }} unattended ${{ env.ISSUE_CONTEXT_PATH }}
