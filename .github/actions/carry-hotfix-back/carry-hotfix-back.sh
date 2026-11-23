@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/carry-hotfix-back/carry-hotfix-back.sh. Profile digest: ede943dfa18d. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/carry-hotfix-back/carry-hotfix-back.sh. Profile digest: ebdd90dc5c5b. Update with `workflows update --force`; consumer edits may be overwritten.
 #
 # Cherry-pick a hotfix that merged into a release branch onto the trunk and open the
 # carry-back pull request (FR-055). Run from a full-history checkout whose `origin` the App

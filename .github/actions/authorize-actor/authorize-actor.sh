@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/authorize-actor/authorize-actor.sh. Profile digest: ede943dfa18d. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/authorize-actor/authorize-actor.sh. Profile digest: ebdd90dc5c5b. Update with `workflows update --force`; consumer edits may be overwritten.
 #
 # May the actor of this event start an agent? Public repositories must ask before an event can
 # start a model. Writes `trusted` and `is_outside_collaborator` (`true` or `false`) to

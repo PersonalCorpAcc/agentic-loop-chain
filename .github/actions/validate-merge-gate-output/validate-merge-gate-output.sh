@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/validate-merge-gate-output/validate-merge-gate-output.sh. Profile digest: ede943dfa18d. Update with `workflows update --force`; consumer edits may be overwritten.
-# Print the deterministic merge-gate outcome: merge, approve, review, remediated, or invalid.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/validate-merge-gate-output/validate-merge-gate-output.sh. Profile digest: ebdd90dc5c5b. Update with `workflows update --force`; consumer edits may be overwritten.
+# Print the deterministic merge-gate outcome: merge, approve, review, remediated, changes, or
+# invalid.
 #
 # `merge` and `approve` are the same judgement about the change and different answers to
 # what happens next, which is the repository's policy rather than the agent's (FR-035).
@@ -27,6 +28,10 @@ has_conflicts="${4:-false}"
 # away over the number cost loopscope one of its six attempts (21/11/2026, PR #266, issue
 # #264). The conclude job posts the comment where it belongs whatever number it carried.
 pr_number="${5:-$issue_number}"
+# `fix` or `review` (feature 007 X08, FR-024). Under review the gate never pushes: `changes` is
+# its request for changes, valid with no push, and `remediated` is not available. Under fix,
+# today's gate, `changes` is not a verdict at all.
+gate_mode="${6:-fix}"
 
 if [ ! -f "$output_file" ] || ! jq -e '.items | arrays' "$output_file" >/dev/null 2>&1; then
   echo invalid
@@ -35,18 +40,21 @@ fi
 
 # The agent emits exactly one comment on the source issue. Its verdict tells the
 # workflow which App-token state transition to perform.
-jq -r --arg issue "$issue_number" --arg pr "$pr_number" --arg conclusion "$ci_conclusion" --arg conflicts "$has_conflicts" '
+jq -r --arg issue "$issue_number" --arg pr "$pr_number" --arg conclusion "$ci_conclusion" --arg conflicts "$has_conflicts" --arg mode "$gate_mode" '
   .items as $items
   | ($items
     | [.[] | select(.type == "add_comment" and ((.item_number | tostring) as $n | $n == $issue or $n == $pr) and (.body | type == "string"))]
     | map(.body |
-        if test("\\*\\*Verdict:\\*\\*\\s*(merge|approve|review|remediated)($|[^a-zA-Z_-])"; "i") then
-          capture("\\*\\*Verdict:\\*\\*\\s*(?<v>merge|approve|review|remediated)($|[^a-zA-Z_-])"; "i").v | ascii_downcase
+        if test("\\*\\*Verdict:\\*\\*\\s*(merge|approve|review|remediated|changes)($|[^a-zA-Z_-])"; "i") then
+          capture("\\*\\*Verdict:\\*\\*\\s*(?<v>merge|approve|review|remediated|changes)($|[^a-zA-Z_-])"; "i").v | ascii_downcase
         else empty end
       )
     | .[0] // "invalid") as $outcome
   | ([$items[] | select(.type == "push_to_pull_request_branch")] | length) as $pushes
-  | if $outcome == "merge" and $conclusion == "success" and $pushes == 0 then "merge"
+  | if $mode == "review" and $pushes > 0 then "invalid"
+    elif $mode == "review" and $outcome == "remediated" then "invalid"
+    elif $outcome == "changes" then (if $mode == "review" and $pushes == 0 then "changes" else "invalid" end)
+    elif $outcome == "merge" and $conclusion == "success" and $pushes == 0 then "merge"
     elif $outcome == "approve" and $conclusion == "success" and $pushes == 0 then "approve"
     elif $outcome == "remediated" and $conclusion == "failure" and $pushes == 1 then "remediated"
     elif $outcome == "remediated" and $conclusion != "failure" and $conflicts == "true" and $pushes == 1 then "remediated"
