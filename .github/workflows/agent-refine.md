@@ -204,56 +204,7 @@ jobs:
           REPO: ${{ github.repository }}
           PARENT: ${{ inputs.issue-number }}
           OUTCOME: ${{ needs.validate_output.outputs.outcome }}
-        run: |
-          set -euo pipefail
-
-          label_one() {
-            local issue="$1"
-            local body points
-            body=$(gh issue view "$issue" --repo "$REPO" --json body --jq '.body // ""')
-            points=$(printf '%s' "$body" | grep -oE '<!-- estimate: [0-9]+ -->' | head -1 | grep -oE '[0-9]+' || true)
-            # The agent writes the readable line every time and the HTML marker only sometimes,
-            # so read the line too rather than leaving the issue with no estimate label at all.
-            [ -n "$points" ] || points=$(printf '%s' "$body" | grep -oiE '\*\*estimate:\*\*[[:space:]]*[0-9]+' | head -1 | grep -oE '[0-9]+' || true)
-            if [ -z "$points" ]; then
-              echo "::warning::#$issue carries no estimate marker; no points label applied."
-              return 0
-            fi
-            case "$points" in
-              1|2|3|5|8|13|21) ;;
-              *) echo "::warning::#$issue estimate '$points' is not a Fibonacci point value; skipping."; return 0 ;;
-            esac
-            # A re-refine re-estimates, so the previous value must not linger beside the new one.
-            for old in $(gh issue view "$issue" --repo "$REPO" --json labels --jq '.labels[].name | select(startswith("sp-"))'); do
-              [ "$old" = "sp-$points" ] || gh issue edit "$issue" --repo "$REPO" --remove-label "$old" >/dev/null
-            done
-            gh label create "sp-$points" --repo "$REPO" --color BFD4F2 \
-              --description "Story points: $points (about $points human days)" >/dev/null 2>&1 || true
-            gh issue edit "$issue" --repo "$REPO" --add-label "sp-$points" >/dev/null
-            echo "#$issue estimated at $points point(s)"
-          }
-
-          label_one "$PARENT"
-
-          # safe_outputs links every child as a sub-issue of the parent, and the tool writes that
-          # link rather than the agent, so it is there even when the body marker the agent was
-          # asked for is missing, which is the usual case. The marker search stays as a fallback.
-          list_children() {
-            local found
-            found=$(gh api "repos/$REPO/issues/$PARENT/sub_issues" --jq '.[].number' 2>/dev/null || true)
-            if [ -z "$found" ]; then
-              found=$(gh issue list --repo "$REPO" --state open --limit 50 \
-                --search "\"<!-- split-parent: ${PARENT} -->\" in:body" --json number --jq '.[].number' || true)
-            fi
-            printf '%s\n' "$found"
-          }
-
-          if [ "$OUTCOME" = "split" ]; then
-            for child in $(list_children); do
-              [ "$child" = "$PARENT" ] && continue
-              label_one "$child"
-            done
-          fi
+        run: bash ./.github/actions/label-estimates/label-estimates.sh
       # safe_outputs writes the children with GITHUB_TOKEN, and a label applied by that token
       # raises no labeled event, so the router never sees a child and the split stalls with the
       # work sitting in issues nobody picked up. Re-applying the label as the app raises the
@@ -269,29 +220,7 @@ jobs:
           REFINE_LABEL: ${{ env.REFINE_LABEL }}
           REFINED_LABEL: ${{ env.REFINED_LABEL }}
           IMPLEMENT_LABEL: ${{ env.IMPLEMENT_LABEL }}
-        run: |
-          set -euo pipefail
-
-          children=$(gh api "repos/$REPO/issues/$PARENT/sub_issues" --jq '.[].number' 2>/dev/null || true)
-          if [ -z "$children" ]; then
-            children=$(gh issue list --repo "$REPO" --state open --limit 50 \
-              --search "\"<!-- split-parent: ${PARENT} -->\" in:body" --json number --jq '.[].number' || true)
-          fi
-          for child in $children; do
-            [ "$child" = "$PARENT" ] && continue
-            # A child handed over earlier carries the refined label. Handing it again would start
-            # a second implement run on work already in flight.
-            if gh issue view "$child" --repo "$REPO" --json labels --jq '.labels[].name' \
-              | grep -qx "$REFINED_LABEL"; then
-              echo "#$child was already handed over; leaving it alone"
-              continue
-            fi
-            gh issue edit "$child" --repo "$REPO" \
-              --remove-label "$REFINE_LABEL" --remove-label "$IMPLEMENT_LABEL" >/dev/null 2>&1 || true
-            gh issue edit "$child" --repo "$REPO" --add-label "$REFINED_LABEL" >/dev/null
-            gh issue edit "$child" --repo "$REPO" --add-label "$IMPLEMENT_LABEL" >/dev/null
-            echo "#$child handed to implement"
-          done
+        run: bash ./.github/actions/hand-split-children/hand-split-children.sh
       - name: Flag questions for review
         if: needs.validate_output.outputs.outcome == 'questions'
         uses: ./.github/actions/add-issue-labels
