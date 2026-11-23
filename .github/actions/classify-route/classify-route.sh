@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/classify-route/classify-route.sh. Profile digest: ede943dfa18d. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/classify-route/classify-route.sh. Profile digest: ebdd90dc5c5b. Update with `workflows update --force`; consumer edits may be overwritten.
 # Classify one GitHub event into exactly one route. Pure: no network, no gh calls, so
 # verify-route-matrix.sh can source this file and exercise the same code the router runs.
 #
@@ -46,6 +46,10 @@ readonly RECONCILE_BOT_PR_RUNS_CRON="23 * * * *"
 readonly PROMOTE_CRON="41 * * * *"
 # The sixth, and switched off by the same fact: a repository with one branch has no stage
 # that can fall behind another, so there is nothing to carry back down (FR-079).
+# Whether the merge gate also assesses people's pull requests, advise-only (feature 007 X11,
+# FR-027). A failed CI run already reaches the gate whoever opened the pull request; with this
+# on, a green one on a person's pull request does too.
+readonly SHADOW_HUMAN_PULL_REQUESTS="false"
 
 has_label() {
   jq -e --arg name "$1" 'index($name)' >/dev/null 2>&1 <<<"${ISSUE_LABELS:-[]}"
@@ -80,6 +84,7 @@ classify_route() {
   local issue_number="" pr_number="" ci_conclusion="" ci_run_id="" merge_gate_attempts="0" implement_attempts="0"
   local refine_mode="" triage_mode="" trigger_kind=""
   local pr_merged="" closes_issue="false" pr_base=""
+  local human_only="false"
 
   case "${EVENT:-}" in
     issues)
@@ -226,7 +231,18 @@ classify_route() {
       # reconcile belt, so routing success here would double-fire the gate for every passing
       # pull request. GitHub delivers workflow_run only for CI runs whose actor is a human;
       # a bot pull request's CI never arrives here at all, and the same two paths cover it.
-      if [ "${RUN_CONCLUSION:-}" != "failure" ]; then
+      #
+      # Shadow mode is the exception (FR-027): a green run arriving here is a person's, and the
+      # gate assesses it advise-only. It goes with `human-only`, because a person can also push
+      # to a bot pull request, whose green verdict reaches the gate through CI's own dispatch.
+      if [ "${RUN_CONCLUSION:-}" = "success" ] && [ "$SHADOW_HUMAN_PULL_REQUESTS" = "true" ] &&
+        is_issue_number "${RUN_PR_NUMBER:-}"; then
+        route="merge-gate"
+        pr_number="${RUN_PR_NUMBER}"
+        ci_conclusion="success"
+        ci_run_id="${RUN_ID:-}"
+        human_only="true"
+      elif [ "${RUN_CONCLUSION:-}" != "failure" ]; then
         error="CI concluded '${RUN_CONCLUSION:-}'; the gate auto-triggers only on failure"
       elif is_issue_number "${RUN_PR_NUMBER:-}"; then
         route="merge-gate"
@@ -365,6 +381,7 @@ pr-number=${pr_number}
 ci-conclusion=${ci_conclusion}
 ci-run-id=${ci_run_id}
 merge-gate-attempts=${merge_gate_attempts}
+human-only=${human_only}
 implement-attempts=${implement_attempts}
 refine-mode=${refine_mode}
 triage-mode=${triage_mode}

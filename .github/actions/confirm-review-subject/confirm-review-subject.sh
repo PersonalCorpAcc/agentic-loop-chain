@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/confirm-review-subject/confirm-review-subject.sh. Profile digest: ede943dfa18d. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/confirm-review-subject/confirm-review-subject.sh. Profile digest: ebdd90dc5c5b. Update with `workflows update --force`; consumer edits may be overwritten.
 #
 # Is this a pull request apply-review may work on, with feedback still to apply?
 #
@@ -9,7 +9,7 @@
 # GITHUB_OUTPUT.
 #
 # Environment: GH_TOKEN, REPO, PR, LINKED_ISSUE (the router's, may be empty), RESOLVED_ISSUE
-# (from the App's linkage, may be empty), GITHUB_OUTPUT.
+# (from the App's linkage, may be empty), GATE_REVIEW_MARKER (the merge gate's), GITHUB_OUTPUT.
 
 set -euo pipefail
 
@@ -48,6 +48,13 @@ fi
 # dropped as "no substantive unresolved feedback" (loopscope #319 and #329, 22/11/2026). So the
 # latest one a person made on the current head joins the set as one item, keyed by the
 # review's own ID; a push moves the head and retires it, as a push outdates a thread (FR-118).
+#
+# A person's, or the merge gate's. Under `gate.mode: review` the gate asks for changes as a
+# review, submitted by the App, and this worker makes them (feature 007 X08, FR-024). That is the
+# one bot review counted, recognised by the gate's marker: any other bot's review is not feedback,
+# and counting them all would let two bots answer each other for ever. The gate caps its own
+# rounds, so the exchange ends with a person if it does not end clean.
+export GATE_REVIEW_MARKER="${GATE_REVIEW_MARKER:-<!-- agent-merge-gate-review -->}"
 # The dollar signs are GraphQL and jq variables, not the shell's.
 # shellcheck disable=SC2016
 threads=$(gh api graphql -f query='
@@ -67,7 +74,9 @@ threads=$(gh api graphql -f query='
           | .headRefOid as $head
           | [.reviewThreads.nodes[] | select(.isResolved == false and .isOutdated == false)]
             + ([.reviews.nodes[]
-                | select(.author.__typename == "User" and .commit.oid == $head
+                | select((.author.__typename == "User"
+                          or (.author.__typename == "Bot" and ((.body // "") | contains(env.GATE_REVIEW_MARKER // "<!-- agent-merge-gate-review -->"))))
+                         and .commit.oid == $head
                          and ((.body // "") | test("\\S")))]
                | if length > 0 then [last | {id, isResolved: false, isOutdated: false,
                    kind: "review", author: .author.login, body}] else [] end)' | jq -c .)
