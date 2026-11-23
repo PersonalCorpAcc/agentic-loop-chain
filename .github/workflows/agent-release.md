@@ -53,28 +53,7 @@ steps:
     env:
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
-    run: |
-      set -euo pipefail
-      mkdir -p /tmp/gh-aw/agent
-
-      last_tag=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
-      if [ -n "$last_tag" ]; then
-        git log --oneline --no-decorate "${last_tag}..HEAD" > /tmp/gh-aw/agent/git-log.txt
-      else
-        git log --oneline --no-decorate -50 > /tmp/gh-aw/agent/git-log.txt
-      fi
-
-      case "$VERSION_SOURCE" in
-        package-manifest) version=$(jq -r '.version // "0.0.0"' package.json 2>/dev/null || echo "0.0.0") ;;
-        git-tag) version=$(git describe --tags --abbrev=0 2>/dev/null || echo ""); version=${version#v}; version=${version:-0.0.0} ;;
-        python-project) version=$(sed -n 's/^version *= *"\(.*\)".*/\1/p' pyproject.toml 2>/dev/null | head -1 || echo ""); version=${version:-0.0.0} ;;
-        none) version="0.0.0" ;;
-        *) echo "::error::Unknown version source: $VERSION_SOURCE"; exit 1 ;;
-      esac
-      echo "$version" > /tmp/gh-aw/agent/current-version.txt
-
-      echo "Last tag: ${last_tag:-none}"
-      echo "Current version: $version"
+    run: bash ./.github/actions/cut-release/prepare-release-context.sh
 
 safe-outputs:
   report-failure-as-issue: false
@@ -112,75 +91,12 @@ jobs:
         id: release
         env:
           VERSION_BUMP: ${{ inputs.version-bump }}
-        run: |
-          set -euo pipefail
-
-          notes="/tmp/gh-aw/agent/release-notes.md"
-          if [ ! -f "$notes" ]; then
-            echo "::error::Agent did not write release-notes.md"
-            exit 1
-          fi
-
-          case "$VERSION_SOURCE" in
-            package-manifest) version=$(jq -r '.version // "0.0.0"' package.json 2>/dev/null || echo "0.0.0") ;;
-            git-tag) version=$(git describe --tags --abbrev=0 2>/dev/null || echo ""); version=${version#v}; version=${version:-0.0.0} ;;
-            python-project) version=$(sed -n 's/^version *= *"\(.*\)".*/\1/p' pyproject.toml 2>/dev/null | head -1 || echo ""); version=${version:-0.0.0} ;;
-            none) version="0.0.0" ;;
-            *) echo "::error::Unknown version source: $VERSION_SOURCE"; exit 1 ;;
-          esac
-          current="$version"
-          echo "current_version=$current" >> "$GITHUB_OUTPUT"
-
-          # Determine the version bump
-          bump="$VERSION_BUMP"
-          if [ "$bump" = "auto" ]; then
-            if grep -qiE 'BREAKING CHANGE' "$notes" || grep -qE '\w+\(!:' /tmp/gh-aw/agent/git-log.txt; then
-              bump="major"
-            elif grep -qE '^feat(\(.+\))?:' /tmp/gh-aw/agent/git-log.txt; then
-              bump="minor"
-            else
-              bump="patch"
-            fi
-          fi
-
-          # Semver bump
-          IFS='.' read -r major minor patch <<< "$current"
-          case "$bump" in
-            major) major=$((major + 1)); minor=0; patch=0 ;;
-            minor) minor=$((minor + 1)); patch=0 ;;
-            patch) patch=$((patch + 1)) ;;
-            *) echo "::error::Unknown version-bump: $bump"; exit 1 ;;
-          esac
-          new_version="${major}.${minor}.${patch}"
-          echo "new_version=$new_version" >> "$GITHUB_OUTPUT"
-          echo "Determined version: $current -> $new_version (bump: $bump)"
-
-          # Copy notes to a clean location the release step can read
-          cp "$notes" /tmp/release-notes.md
+        run: bash ./.github/actions/cut-release/determine-version.sh
       - name: Write the new version to its source
         if: env.VERSION_SOURCE != 'none'
         env:
           NEW_VERSION: ${{ steps.release.outputs.new_version }}
-        run: |
-          set -euo pipefail
-          case "$VERSION_SOURCE" in
-            package-manifest)
-              for file in package.json cli/package.json; do
-                [ -f "$file" ] || continue
-                jq --arg v "$NEW_VERSION" '.version = $v' "$file" > "$file.tmp" && mv "$file.tmp" "$file"
-                git add "$file"
-                echo "Bumped $file to $NEW_VERSION"
-              done
-              ;;
-            python-project)
-              sed -i "s/^version *= *\".*\"/version = \"$NEW_VERSION\"/" pyproject.toml
-              git add pyproject.toml
-              echo "Bumped pyproject.toml to $NEW_VERSION"
-              ;;
-            git-tag)
-              echo "The tag is the version source; nothing to write."
-              ;;
-          esac
+        run: bash ./.github/actions/cut-release/write-version.sh
       - name: Commit, tag, and push
         if: env.VERSION_SOURCE != 'none'
         env:
