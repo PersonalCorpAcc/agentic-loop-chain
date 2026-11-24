@@ -52,7 +52,7 @@ retry_route() {
 
       # Comments come oldest first, page by page, so the last line is the newest.
       newest="$(gh api "repos/$REPO/issues/$issue/comments?per_page=100" --paginate \
-        --jq '.[] | [.created_at, .body] | @json' 2>/dev/null | tail -n 1)"
+        --jq '.[] | [.created_at, .body] | @json' 2>/dev/null | tail -n 1 || true)"
       [ -n "$newest" ] || continue
       body="$(jq -r '.[1]' <<<"$newest")"
       case "$body" in *"<!-- agent-retry-pending: ${route} "*) ;; *) continue ;; esac
@@ -69,7 +69,7 @@ retry_route() {
       if [ "${outages:-0}" -ge "$RETRY_ATTEMPTS" ]; then
         echo "#$issue: ${route} ended without an outcome ${outages} times; handing it to a person."
         gh issue edit "$issue" --repo "$REPO" --add-label "$REVIEW_LABEL" >/dev/null 2>&1 || true
-        gh issue comment "$issue" --repo "$REPO" --body "Automated ${route} ended without an outcome ${outages} times in a row, each time early enough to look like a provider outage, so it is no longer retried. The issue now carries \`${REVIEW_LABEL}\`; remove it and re-add \`${route}\` to try again." >/dev/null
+        gh issue comment "$issue" --repo "$REPO" --body "Automated ${route} ended without an outcome ${outages} times in a row, each time early enough to look like a provider outage, so it is no longer retried. The issue now carries \`${REVIEW_LABEL}\`; remove it and re-add \`${route}\` to try again." >/dev/null 2>&1 || true
         continue
       fi
       if run_in_flight "$issue"; then
