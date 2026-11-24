@@ -691,6 +691,7 @@ jobs:
           token: ${{ steps.app-token.outputs.token }}
           pr-number: ${{ needs.subject.outputs.pr }}
       - name: Merge approved pull request
+        id: merge
         if: needs.validate_output.outputs.outcome == 'merge' && needs.subject.outputs.auto_merge == 'true' && steps.preconditions.outputs.mergeable == 'true'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
@@ -701,6 +702,21 @@ jobs:
           set -euo pipefail
           head_sha=$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq '.headRefOid')
           gh pr merge "$PR" --repo "$REPO" "--${MERGE_METHOD}" --match-head-commit "$head_sha"
+      # The verdict is already on the pull request, so a merge that fails here (the head moved,
+      # the base moved, the forge said no) left a `merge` verdict newer than CI that no sweep
+      # would ever look past, with the issue still reserved: approved, unmerged, for ever
+      # (FR-139). A failed merge goes to a person, saying so, exactly as a refused one does.
+      - name: Hand the merge to a person when it failed
+        if: always() && steps.merge.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ needs.subject.outputs.pr }}
+          ISSUE: ${{ needs.subject.outputs.issue }}
+          PROMOTION: ${{ needs.subject.outputs.promotion }}
+          REVIEW_LABEL: ${{ env.REVIEW_LABEL }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: bash ./.github/actions/merge-gate/hand-failed-merge.sh
       # A rule is holding it, and a rule can still be satisfied (FR-080). This is the case
       # protection produces on every pull request into a branch whose owner wants a person on
       # it, so it must not read as a failure: the gate marks the pull request ready and the

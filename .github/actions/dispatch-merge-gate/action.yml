@@ -47,8 +47,10 @@ runs:
         conclusion=success
         for result in $RESULTS; do
           case "$result" in
-            failure) conclusion=failure; break ;;
-            cancelled | timed_out) conclusion=cancelled ;;
+            # A run that timed out was not superseded by anything: it is a failure (usually a
+            # hung test), and dropping it left the pull request with no gate (FR-142).
+            failure | timed_out) conclusion=failure; break ;;
+            cancelled) conclusion=cancelled ;;
           esac
         done
         # A cancelled run was superseded by a newer push, whose own run dispatches.

@@ -1490,6 +1490,41 @@ else
   FAIL=$((FAIL + 1))
   echo "FAIL: incomplete runs are not retried: the belt's sweep, the classifier, a worker's marker or the router's retry-of exclusion is missing" >&2
 fi
+# Implement work nothing holds is started from the belt by state, and a failure there cannot take
+# the merge-gate sweep after it down (FR-132; loopscope #304 and #248). Behaviour is tested in
+# the package (restart-orphans.test.ts); this checks an install is wired for it.
+if [ -f "${HERE}/../retry-pending/restart-orphans.sh" ] &&
+  grep -q 'bash ./.github/actions/retry-pending/restart-orphans.sh ||' "$ROUTER_YML"; then
+  PASS=$((PASS + 1))
+else
+  FAIL=$((FAIL + 1))
+  echo "FAIL: orphaned implement work is never restarted: restart-orphans.sh or its guarded call in the reconcile belt is missing" >&2
+fi
+# The review of 23/11/2026 (FR-133 to FR-142): each a way work stuck or looped on the forge.
+# Behaviour is tested in the package; these check an install is wired for each.
+MERGE_GATE_MD="${HERE}/../../workflows/agent-merge-gate.md"
+for check in \
+  "ROUTE=refine ROUTE_LABEL=@@refine work nothing holds is never restarted (FR-140)" \
+  "bash ./.github/actions/retry-pending/release-stale-pending.sh ||@@a pending-pull-request label whose pull request closed is never released (FR-141)" \
+  "group: reconcile-bot-pr-runs@@two reconcile belts can overlap and double every marker (FR-136)" \
+  "run: bash ./.github/actions/nudge-reconcile/nudge-reconcile.sh@@no router run starts the reconcile belt when the schedule is dropped (FR-138)" \
+  "          - retriage@@the mode input refuses retriage, so an outside collaborator's reply is lost with a 422 (FR-137)" \
+  "bash ./.github/actions/retry-pending/retry-pending.sh ||@@the retry sweep can end the whole belt (FR-134)"; do
+  needle="${check%%@@*}"
+  why="${check#*@@}"
+  if grep -qF -- "$needle" "$ROUTER_YML"; then
+    PASS=$((PASS + 1))
+  else
+    FAIL=$((FAIL + 1))
+    echo "FAIL: ${why}" >&2
+  fi
+done
+if [ ! -f "$MERGE_GATE_MD" ] || grep -qF "run: bash ./.github/actions/merge-gate/hand-failed-merge.sh" "$MERGE_GATE_MD"; then
+  PASS=$((PASS + 1))
+else
+  FAIL=$((FAIL + 1))
+  echo "FAIL: a merge that fails after a merge verdict is never retried or handed to a person (FR-139)" >&2
+fi
 # A run that ended on the provider's temporary answer is an outage however long it ran, and is
 # asked before the refusal signature, which the CLI's wording of it matches (FR-123, loopscope #363).
 CLASSIFIER_SH="${HERE}/../retry-pending/classify-incomplete.sh"
