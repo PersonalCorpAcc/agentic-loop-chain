@@ -11,16 +11,22 @@
 # asks whether a belt has started recently, and starts one if not. It never starts a second:
 # one waiting or running is enough, and the belt's concurrency group holds the rest.
 #
-# Reads: REPO, GH_TOKEN, DEFAULT_BRANCH, STALE_MINUTES (default 30); NOW (epoch seconds) for tests.
+# Reads: REPO, GH_TOKEN, DEFAULT_BRANCH, RECONCILE_CRON (the belt's schedule, empty when it is
+#        off), STALE_MINUTES (default 30); NOW (epoch seconds) for tests.
 set -euo pipefail
 
 now="${NOW:-$(date -u +%s)}"
 stale="${STALE_MINUTES:-30}"
 title="dispatch: reconcile-bot-pr-runs"
+# A belt the schedule started is named for its cron, and counts the same as a dispatched one: the
+# first version counted dispatched belts only, so it started a second belt minutes after a
+# scheduled one (loopscope, 24/11/2026 00:56).
+scheduled="schedule ${RECONCILE_CRON:-}"
+[ -n "${RECONCILE_CRON:-}" ] || scheduled="$title"
 
-# The newest dispatched belt's status and start, whatever its state.
-latest="$(gh api "repos/$REPO/actions/workflows/work-router.yml/runs?event=workflow_dispatch&per_page=100" \
-  --jq "[.workflow_runs[] | select(.display_title == \"$title\")][0] // empty | [.status, .created_at] | @tsv" 2>/dev/null || true)"
+# The newest belt's status and start, whatever started it and whatever its state.
+latest="$(gh api "repos/$REPO/actions/workflows/work-router.yml/runs?per_page=100" \
+  --jq "[.workflow_runs[] | select(.display_title == \"$title\" or .display_title == \"$scheduled\")][0] // empty | [.status, .created_at] | @tsv" 2>/dev/null || true)"
 
 if [ -n "$latest" ]; then
   IFS=$'\t' read -r status created <<<"$latest"
