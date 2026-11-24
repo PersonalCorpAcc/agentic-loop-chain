@@ -38,7 +38,7 @@
 #
 # Reads: REPO, GH_TOKEN, DEFAULT_BRANCH, ROUTE, ROUTE_LABEL (else IMPLEMENT_LABEL), WORKING_LABEL,
 #        REVIEW_LABEL, HOLD_LABEL, PR_PENDING_LABEL, BOT_LOGIN, ORPHAN_AFTER_MINUTES,
-#        RETRY_ATTEMPTS; NOW for tests.
+#        RETRY_ATTEMPTS, BASE_BRANCH (a blocker merged there has landed); NOW for tests.
 set -euo pipefail
 
 now="${NOW:-$(date -u +%s)}"
@@ -76,18 +76,12 @@ labeller_trusted() {
   return 1
 }
 
+# The blockers that have not landed (FR-151: closed, or merged into BASE_BRANCH). Called in a
+# command substitution, where errexit does not reach: a parser that cannot run counts as a
+# blocker, so nothing is restarted on a body nobody could read.
 open_blockers() {
-  local body="$1" blocker state still=""
-  local blockers
-  # Called in a command substitution, where errexit does not reach: a parser that cannot run
-  # counts as a blocker, so nothing is restarted on a body nobody could read.
-  blockers=$(bash "$(dirname "${BASH_SOURCE[0]}")/../check-implement-eligibility/list-blockers.sh" <<<"$body") ||
-    { printf '%s' "(its blockers could not be read)"; return 0; }
-  for blocker in $blockers; do
-    state="$(gh issue view "$blocker" --repo "$REPO" --json state --jq .state 2>/dev/null || echo UNKNOWN)"
-    [ "$state" = "CLOSED" ] || still="${still} #${blocker}"
-  done
-  printf '%s' "${still# }"
+  bash "$(dirname "${BASH_SOURCE[0]}")/../check-implement-eligibility/open-blockers.sh" <<<"$1" ||
+    printf '%s' "(its blockers could not be read)"
 }
 
 # Head branches of this loop's pull requests that are open or merged, read once per pass.
@@ -97,10 +91,14 @@ if [ "$route" = implement ]; then
     --jq '.[] | select(.state == "open" or .merged_at != null) | .head.ref' 2>/dev/null || true)"
 fi
 
-issues="$(gh issue list --repo "$REPO" --label "$label" --state open --limit 100 --json number,labels,updatedAt,body \
-  --jq ".[] | select([.labels[].name] | (index(\"${WORKING_LABEL}\") or index(\"${REVIEW_LABEL}\") or index(\"${HOLD_LABEL}\") or index(\"${PR_PENDING_LABEL}\")) | not) | [.number, .updatedAt, (.body // \"\" | @json)] | @tsv")"
+# Number and time only: a body does not survive `@tsv`, which escapes its backslashes, so the
+# JSON-encoded body jq wrote no longer parsed, read as empty, and every blocker was missed
+# (FR-150; loopscope #454 restarted hourly while #453 was open, 24/11/2026). Bodies are read
+# one at a time below, only for issues that get that far.
+issues="$(gh issue list --repo "$REPO" --label "$label" --state open --limit 100 --json number,labels,updatedAt \
+  --jq ".[] | select([.labels[].name] | (index(\"${WORKING_LABEL}\") or index(\"${REVIEW_LABEL}\") or index(\"${HOLD_LABEL}\") or index(\"${PR_PENDING_LABEL}\")) | not) | [.number, .updatedAt] | @tsv")"
 
-while IFS=$'\t' read -r issue updated body_json; do
+while IFS=$'\t' read -r issue updated; do
   case "$issue" in '' | *[!0-9]*) continue ;; esac
   [ -n "${updated:-}" ] || continue
 
@@ -115,7 +113,12 @@ while IFS=$'\t' read -r issue updated body_json; do
       echo "#$issue: a pull request from this loop is open or merged on one of its branches; not starting another."
       continue
     fi
-    blocked="$(open_blockers "$(jq -r '.' <<<"${body_json:-\"\"}" 2>/dev/null || true)")"
+    # Unreadable is not empty: an issue whose body cannot be read is left for the next pass.
+    if ! body="$(gh issue view "$issue" --repo "$REPO" --json body --jq '.body // ""' 2>/dev/null)"; then
+      echo "::warning::#$issue: its body could not be read, so its blockers are unknown; leaving it for the next pass."
+      continue
+    fi
+    blocked="$(open_blockers "$body")"
     if [ -n "$blocked" ]; then
       echo "#$issue: still blocked by ${blocked}; the held-for-blockers sweep starts it."
       continue
