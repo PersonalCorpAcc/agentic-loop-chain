@@ -1,4 +1,4 @@
-// Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/agent-output.cjs. Profile digest: ccaabc0b4a1d. Update with `workflows update --force`; consumer edits may be overwritten.
+// Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/agent-output.cjs. Profile digest: 971155b21f32. Update with `workflows update --force`; consumer edits may be overwritten.
 const fs = require('node:fs');
 
 // Every apply-agent-* action reads the same artifact the same way: a missing file means the

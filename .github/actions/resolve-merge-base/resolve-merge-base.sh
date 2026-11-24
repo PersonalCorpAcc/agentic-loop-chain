@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/resolve-merge-base/resolve-merge-base.sh. Profile digest: ccaabc0b4a1d. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/resolve-merge-base/resolve-merge-base.sh. Profile digest: 971155b21f32. Update with `workflows update --force`; consumer edits may be overwritten.
 #
 # Which branch is this gate's pull request aimed at? The merge belt's lock is keyed on it
 # (FR-033). Never answers with nothing: an empty key puts every gate back into one queue.
