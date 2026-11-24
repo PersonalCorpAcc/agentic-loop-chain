@@ -3,7 +3,7 @@
 #
 # Hold an issue for its blockers (feature 007 X12): release the working label, because an issue
 # must not look in progress with nothing running, and say once what it is waiting for. It keeps
-# the implement label; the router's hourly sweep starts it again when its blockers close.
+# the implement label; the router's hourly sweep starts it again when its blockers land (FR-151).
 #
 # Environment: GH_TOKEN, GITHUB_REPOSITORY, ISSUE_NUMBER, BLOCKED_BY (e.g. "#12, #13"),
 # WORKING_LABEL, IMPLEMENT_LABEL.
@@ -15,5 +15,5 @@ already=$(gh api "repos/$GITHUB_REPOSITORY/issues/$ISSUE_NUMBER/comments?per_pag
   --jq ".[] | select(.body | contains(\"$marker\")) | .id" | grep -c . || true)
 if [ "${already:-0}" -eq 0 ]; then
   gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body "${marker}
-Held: this issue is blocked by ${BLOCKED_BY}, which must land first. It keeps \`${IMPLEMENT_LABEL}\` and starts on its own once every blocker is closed."
+Held: this issue is blocked by ${BLOCKED_BY}, which must land first. It keeps \`${IMPLEMENT_LABEL}\` and starts on its own once every blocker has landed: closed, or merged into the branch implement starts from."
 fi
