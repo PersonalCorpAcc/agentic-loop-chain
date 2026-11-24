@@ -53,7 +53,7 @@ gate_is_live() {
   return 1
 }
 
-# The newest concluded (success or failure) pull_request run of the CI workflow matching a
+# The newest concluded (success, failure, or timed_out as failure: FR-142) pull_request run of the CI workflow matching a
 # runs query (`head_sha=...` or `branch=...`), as `id<TAB>conclusion<TAB>updated_at`, or
 # nothing. pull_request only: the gate judges the merge result, and a push run on the bot's
 # branch judged something else.
@@ -61,8 +61,9 @@ ci_verdict() {
   gh api "repos/$REPO/actions/runs?$1&per_page=100" \
     --jq '[.workflow_runs[]
       | select(.name == env.CI_WORKFLOW_NAME and .event == "pull_request" and .status == "completed"
-               and (.conclusion == "success" or .conclusion == "failure"))]
-      | sort_by(.created_at) | last // empty | [.id, .conclusion, .updated_at] | @tsv'
+               and (.conclusion == "success" or .conclusion == "failure" or .conclusion == "timed_out"))]
+      | sort_by(.created_at) | last // empty
+      | [.id, (if .conclusion == "timed_out" then "failure" else .conclusion end), .updated_at] | @tsv'
 }
 
 # The CI verdict the gate should act on for one pull request, as ci_verdict prints it.
@@ -155,8 +156,34 @@ gate_attempts_since() {
 # Decide whether one pull request with a CI verdict gets a gate now, and dispatch it if so.
 # Says what it decided either way, because a sweep's no-action case is per pull request.
 dispatch_gate_if_due() {
-  local pr="$1" ci_run_id="$2" ci_conclusion="$3" ci_finished="$4" verdict attempts
+  local pr="$1" ci_run_id="$2" ci_conclusion="$3" ci_finished="$4" verdict attempts head blocked word
   [ "$ci_run_id" != none ] || ci_run_id=""
+
+  # Pull requests the gate will not assess leave no verdict and no attempt marker, so without
+  # these two checks every sweep dispatched them again, for ever, each run holding the base's
+  # merge-belt lock while real gates queued behind it (FR-135; loopscope #2, #123, #124, #238
+  # and #348, chain #116, 23/11/2026).
+  #
+  # One that carries no issue: a sync or probe branch. A promotion is still dispatched, because
+  # the gate hands a promotion it cannot assess to a person, which is a verdict.
+  if [ -z "$(pr_issues "$pr" 2>/dev/null | grep . || true)" ]; then
+    head="$(gh pr view "$pr" --repo "$REPO" --json headRefName --jq '.headRefName' 2>/dev/null || true)"
+    case "$head" in
+      promote/*) ;;
+      *)
+        echo "PR #$pr carries no issue this loop knows; the gate does not assess it, so it is not dispatched."
+        return 0
+        ;;
+    esac
+  fi
+  # One a person has asked to change: the gate's own rule, read from the gate's own script.
+  blocked="$(PR="$pr" REPO="$REPO" GITHUB_OUTPUT=/dev/stdout \
+    bash "$(dirname "${BASH_SOURCE[0]}")/../gate-review/review-blocked.sh" 2>/dev/null |
+    sed -n 's/^review_blocked=//p' | tail -n 1 || true)"
+  if [ "$blocked" = true ]; then
+    echo "PR #$pr: a person has requested changes; it is theirs or apply-review's, not the gate's."
+    return 0
+  fi
 
   # A recorded verdict counts only when it is NEWER than the CI verdict; the old existence
   # check made the gate one-shot per pull request.
@@ -166,9 +193,15 @@ dispatch_gate_if_due() {
     # the base merges unattended, that pull request merges itself if the gate looks again, and
     # nothing else will make it look (FR-109; loopscope 20/11/2026, after autoMerge.targets
     # gained main, open promotions assessed before it waited for a person indefinitely).
-    if [ "$(latest_gate_verdict_word "$pr")" = approve ] &&
+    word="$(latest_gate_verdict_word "$pr")"
+    if [ "$word" = approve ] &&
       policy_merges_unattended "$(gh pr view "$pr" --repo "$REPO" --json baseRefName --jq '.baseRefName' 2>/dev/null || true)"; then
       echo "PR #$pr: the gate approved it for a person to merge, and its base now merges unattended; re-assessing under the new policy."
+    # Or one it approved or armed that has conflicted since: CI cannot run on a conflicting head,
+    # so the CI time never moves past the verdict and nothing else would look again (FR-139).
+    # Resolving the conflict is the gate's job.
+    elif { [ "$word" = merge ] || [ "$word" = approve ]; } && [ "$(mergeable_state "$pr")" = CONFLICTING ]; then
+      echo "PR #$pr: the gate's '$word' verdict predates a conflict with its base; dispatching the gate to resolve it."
     else
       echo "PR #$pr: the gate's verdict ($verdict) is newer than CI ($ci_finished); not dispatching."
       return 0
@@ -185,12 +218,25 @@ dispatch_gate_if_due() {
   fi
 
   echo "Dispatching the merge gate for PR #$pr (CI $ci_conclusion, run ${ci_run_id:-none}, attempt $((attempts + 1)) of $MERGE_GATE_ATTEMPTS)."
-  gh api "repos/$REPO/actions/workflows/work-router.yml/dispatches" \
+  # `ci-conclusion` is a choice input (success, failure, action_required): GitHub refuses any
+  # other value with a 422. With no CI at all (FR-108) the input is left out, and the gate's
+  # subject step finds no check run and records `unknown` itself (FR-131; loopscope #409,
+  # 23/11/2026, where `unknown` was sent and both sweeps died on it).
+  local conclusion_input=()
+  case "$ci_conclusion" in
+    success | failure | action_required) conclusion_input=(-f "inputs[ci-conclusion]=$ci_conclusion") ;;
+  esac
+  # One refused dispatch must not end the sweep: every pull request after it would never be
+  # looked at, which is how a whole board sits still behind one bad pull request (FR-131).
+  if ! gh api "repos/$REPO/actions/workflows/work-router.yml/dispatches" \
     --method POST \
     -f ref="$DEFAULT_BRANCH" \
     -f "inputs[operation]=merge-gate" \
     -f "inputs[pr-number]=$pr" \
-    -f "inputs[ci-conclusion]=$ci_conclusion" \
+    "${conclusion_input[@]}" \
     -f "inputs[ci-run-id]=$ci_run_id" \
-    -f "inputs[attempts_so_far]=$attempts"
+    -f "inputs[attempts_so_far]=$attempts"; then
+    echo "::error::The merge-gate dispatch for PR #$pr was refused; the sweep goes on to the next pull request."
+  fi
+  return 0
 }
