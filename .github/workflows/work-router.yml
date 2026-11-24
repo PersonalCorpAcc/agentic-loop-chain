@@ -152,12 +152,15 @@ on:
         required: false
         type: string
       mode:
-        description: "Refine mode: first or rerefine"
+        description: "Refine mode (first or rerefine) or triage mode (first or retriage)"
         required: false
         type: choice
         options:
           - first
           - rerefine
+          # Triage's re-run on an outside collaborator's reply. classify-route produced it and the
+          # choice refused it with a 422, so every such reply was lost (FR-137).
+          - retriage
       ci-conclusion:
         description: "CI conclusion for merge-gate dispatch"
         required: false
@@ -989,10 +992,11 @@ jobs:
             #
             # The base comes through the environment rather than the jq string, so a branch
             # name cannot close the quoting and add a filter of its own.
-            gh api "repos/$REPO/pulls?state=open&per_page=100" \
+            gh api --paginate "repos/$REPO/pulls?state=open&per_page=100" \
               --jq '.[] | select(.user.type == "Bot" and .draft == false and .base.ref == env.MERGED_BASE) | .number' |
               while IFS= read -r pr; do
-                maybe_dispatch "$pr"
+                # One pull request's failure is a warning, not the end of the sweep (FR-134).
+                maybe_dispatch "$pr" || echo "::warning::PR #$pr could not be swept; the next sweep will try again."
               done
           else
             maybe_dispatch "$EVENT_PR"
@@ -1009,11 +1013,52 @@ jobs:
           route: detect-pr-conflicts
           detail: "${{ job.status == 'success' && 'Swept the bot pull requests for conflicts and failed CI; the step log names each one and what was decided.' || 'The conflict sweep did not finish; the step log names the last pull request it reached.' }}"
 
+  # Every router run is a chance to start the reconcile belt, whose schedule GitHub delivered
+  # about three times a day; this starts one when none has for half an hour (FR-138). No model,
+  # no checkout of anything but its own script, and a failure here never fails the router run.
+  nudge-reconcile:
+    needs: classify
+    if: always() && needs.classify.outputs.route != 'reconcile-bot-pr-runs'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    continue-on-error: true
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Check out the nudge script
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/actions/nudge-reconcile
+      - name: Create bot token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ secrets.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_PRIVATE_KEY }}
+      - name: Start the reconcile belt if none has for half an hour
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REPO: ${{ github.repository }}
+          # The default branch, as every dispatch in this file (FR-025).
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: bash ./.github/actions/nudge-reconcile/nudge-reconcile.sh
+
   reconcile-bot-pr-runs:
     needs: classify
     if: needs.classify.outputs.route == 'reconcile-bot-pr-runs'
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 15
+    # One belt at a time (FR-136). Two overlapping belts both dispatched gates past each other's
+    # "already live" check and wrote every attempt and restart marker twice, so caps were reached
+    # in half the passes (release canary, 23/11/2026: pairs started 3-4 seconds apart). One run
+    # and one waiting is all a belt needs: any later pass sees everything an earlier one would
+    # have, so a newer waiting run replacing an older one loses nothing. Fifteen minutes, not
+    # five, so a long board is swept to the end rather than cut off part-way.
+    concurrency:
+      group: reconcile-bot-pr-runs
+      cancel-in-progress: false
     permissions:
       contents: read
       actions: write
@@ -1026,6 +1071,11 @@ jobs:
       CI_WAIT_MINUTES: "45"
       CI_WORKFLOW_NAME: "CI"
       REVIEW_LABEL: "review"
+      # Every label the belt reads or writes is the profile's, never a literal (FR-134).
+      IMPLEMENT_LABEL: "implement"
+      WORKING_LABEL: "bot-working"
+      HOLD_LABEL: "hold"
+      PR_PENDING_LABEL: "pr-pending"
     steps:
       - name: Checkout for App token action
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1082,7 +1132,7 @@ jobs:
           # takes, anchored to the end of the title -- the same rule the duplicate guard uses.
           # A pre-filter like the others (decision D4): the linkage record above is what decides,
           # and a live implement run only defers the sweep to its next pass.
-          gh issue list --repo "$REPO" --label bot-working --state open --limit 100 \
+          gh issue list --repo "$REPO" --label "$WORKING_LABEL" --state open --limit 100 \
             --json number --jq '.[].number' |
             while IFS= read -r issue; do
               [ -n "$issue" ] || continue
@@ -1090,17 +1140,21 @@ jobs:
               live=$(gh api "repos/$REPO/actions/runs?per_page=100" \
                 --jq "[.workflow_runs[]
                   | select(.status == \"queued\" or .status == \"in_progress\" or .status == \"pending\" or .status == \"waiting\")
-                  | select((.display_title | startswith(\"Working (Implement)\")) and ((.display_title | endswith(\"(#${issue})\")) or (.display_title | endswith(\": #${issue}\"))))
+                  | select((.display_title | startswith(\"Working (\")) and ((.display_title | endswith(\"(#${issue})\")) or (.display_title | endswith(\": #${issue}\"))))
                 ] | length" 2>/dev/null || echo 1)
               [ "${live:-1}" -eq 0 ] || continue
 
               # GITHUB_OUTPUT is set inside a step and the script appends there when it is,
               # so it has to be pointed at stdout to be read here. Otherwise this captures
               # nothing and quietly writes three keys into the job's own outputs.
-              linked_pr=$(GITHUB_OUTPUT=/dev/stdout GH_TOKEN="$GH_TOKEN" REPO="$REPO" ISSUE_NUMBER="$issue" \
+              # A failed lookup keeps the reservation: it is only cleared on an answer (FR-134).
+              if ! linked_pr=$(GITHUB_OUTPUT=/dev/stdout GH_TOKEN="$GH_TOKEN" REPO="$REPO" ISSUE_NUMBER="$issue" \
                 BOT_LOGIN="personalcorpacc-agentic-loop[bot]" \
                 bash ./.github/actions/resolve-change-linkage/resolve-change-linkage.sh 2>/dev/null |
-                sed -n 's/^pr=//p' | head -1)
+                sed -n 's/^pr=//p' | head -1); then
+                echo "::warning::Could not read #$issue's linkage; keeping its reservation until the next sweep."
+                continue
+              fi
               if [ -n "${linked_pr:-}" ]; then
                 state=$(gh pr view "$linked_pr" --repo "$REPO" --json state --jq .state 2>/dev/null || echo UNKNOWN)
                 # UNKNOWN as well as OPEN: a reservation is only cleared on an answer, never on
@@ -1109,15 +1163,19 @@ jobs:
                 [ "$state" = "MERGED" ] || [ "$state" = "CLOSED" ] || continue
               fi
 
-              echo "Clearing a stale bot-working reservation on #$issue: no implement run, no open pull request."
-              gh issue edit "$issue" --repo "$REPO" --remove-label bot-working
-            done
+              echo "Clearing a stale $WORKING_LABEL reservation on #$issue: no worker run, no open pull request."
+              gh issue edit "$issue" --repo "$REPO" --remove-label "$WORKING_LABEL" >/dev/null ||
+                echo "::warning::Could not clear $WORKING_LABEL on #$issue; the next sweep will try again."
+            done ||
+            echo "::warning::The stale reservation sweep did not finish; the sweeps below still run."
 
           # Held for blockers (feature 007 X12): implement released an issue whose `Blocked by #M`
           # was still open and said so with a marked comment. Once every blocker has closed, it is
           # started again from here. Hourly is soon enough for work that was waiting anyway.
-          gh issue list --repo "$REPO" --label implement --state open --limit 100 --json number,labels \
-            --jq '.[] | select(([.labels[].name] | index("bot-working")) | not) | .number' |
+          # Only what nothing holds: a person's hold or review, a run's reservation and an open pull
+          # request are theirs, and implement's reserve would strip review (FR-134).
+          gh issue list --repo "$REPO" --label "$IMPLEMENT_LABEL" --state open --limit 100 --json number,labels \
+            --jq ".[] | select([.labels[].name] | (index(\"$WORKING_LABEL\") or index(\"$REVIEW_LABEL\") or index(\"$HOLD_LABEL\") or index(\"$PR_PENDING_LABEL\")) | not) | .number" |
             while IFS= read -r issue; do
               case "$issue" in '' | *[!0-9]*) continue ;; esac
               held=$(gh api "repos/$REPO/issues/$issue/comments?per_page=100" --paginate \
@@ -1137,18 +1195,36 @@ jobs:
               gh api "repos/$REPO/actions/workflows/work-router.yml/dispatches" --method POST \
                 -f ref="$DEFAULT_BRANCH" -f "inputs[operation]=implement" -f "inputs[issue-number]=$issue" ||
                 echo "::warning::Could not start #$issue; the next sweep will try again."
-            done
+            done ||
+            echo "::warning::The held-for-blockers sweep did not finish; the sweeps below still run."
 
           # Runs that ended for a reason that passes -- the daily AI-credit allowance, a provider
           # outage -- keep their route label and a marked comment, and are started again here
           # once they have waited the retry window (FR-113). Nothing else ever did, so their
           # comment promised a retry that never came (loopscope #265 and #268, 21/11/2026).
-          WORKING_LABEL=bot-working HOLD_LABEL="hold" \
-            RETRY_AFTER_MINUTES="6" \
+          RETRY_AFTER_MINUTES="6" \
             RETRY_ATTEMPTS="5" \
-            bash ./.github/actions/retry-pending/retry-pending.sh
+            bash ./.github/actions/retry-pending/retry-pending.sh ||
+            echo "::warning::The retry sweep did not finish; the sweeps below still run."
 
-          gh api "repos/$REPO/pulls?state=open&per_page=100" |
+          # Implement work nothing else will start: the label event was dropped, a failed run's
+          # re-dispatch was lost, a run was cancelled. Read from state, not from an event, so it
+          # does not depend on anything having finished (FR-132; loopscope #304 and #248).
+          RETRY_ATTEMPTS="5" BOT_LOGIN="personalcorpacc-agentic-loop[bot]" \
+            bash ./.github/actions/retry-pending/restart-orphans.sh ||
+            echo "::warning::The orphan restart did not finish; the merge-gate sweep below still runs."
+          # The same for refine, which had no level-triggered exit at all (FR-140).
+          ROUTE=refine ROUTE_LABEL="refine" \
+            RETRY_ATTEMPTS="5" BOT_LOGIN="personalcorpacc-agentic-loop[bot]" \
+            bash ./.github/actions/retry-pending/restart-orphans.sh ||
+            echo "::warning::The refine orphan restart did not finish; the merge-gate sweep below still runs."
+          # The pending-PR label.s only exit is stage-merge on the close event; a lost event or a failed
+          # step left the issue "in flight" for ever (FR-141).
+          BOT_LOGIN="personalcorpacc-agentic-loop[bot]" \
+            bash ./.github/actions/retry-pending/release-stale-pending.sh ||
+            echo "::warning::The stale pr-pending sweep did not finish; the merge-gate sweep below still runs."
+
+          gh api --paginate "repos/$REPO/pulls?state=open&per_page=100" |
             jq -r --arg repo "$REPO" '
               .[]
               | select(
@@ -1165,7 +1241,7 @@ jobs:
                       .event == "pull_request"
                       and .name == "CI"
                     )
-                  | .id' |
+                  | .id' 2>/dev/null |
                 while IFS= read -r run_id; do
                   # One transient GitHub error must not end the sweep for every pull request
                   # after this one: on 21/11/2026 a 502 put the error body where the run ids
@@ -1174,7 +1250,7 @@ jobs:
                   echo "Approving trusted bot run $run_id"
                   gh api "repos/$REPO/actions/runs/$run_id/approve" --method POST ||
                     echo "::warning::Could not approve run $run_id on PR #$pr_number; the next sweep will try again."
-                done
+                done || echo "::warning::Could not list PR #$pr_number's runs awaiting approval; the next sweep will try again."
 
               if ! ci="$(gate_ci "$pr_number" "$head_sha" "$branch")"; then
                 # A pull request opened with the workflow token raises no events, so its CI may never
@@ -1182,7 +1258,12 @@ jobs:
                 # request nobody looks at, so after the wait it becomes a review: the label is what a
                 # person sees. The comment is written once, keyed on its own marker, because the belt runs
                 # hourly for ever.
+                # From the later of opening and the head commit: after a gate fix or apply-review push
+                # the new head's CI is still to come, and timing from the opening handed it to a
+                # person with "no CI after 900 minutes" while its run was queued (FR-142).
                 opened_at=$(gh pr view "$pr_number" --repo "$REPO" --json createdAt --jq '.createdAt' 2>/dev/null || echo '')
+                pushed_at=$(gh api "repos/$REPO/commits/$head_sha" --jq '.commit.committer.date' 2>/dev/null || echo '')
+                if [ -n "$pushed_at" ] && [[ "$pushed_at" > "$opened_at" ]]; then opened_at="$pushed_at"; fi
                 waited=0
                 if [ -n "$opened_at" ]; then
                   opened_epoch=$(date -u -d "$opened_at" +%s 2>/dev/null || echo 0)
@@ -1200,7 +1281,8 @@ jobs:
                   --jq ".[] | select(.body | contains(\"$marker\")) | .id" 2>/dev/null | grep -c . || true)
                 if [ "${already:-0}" -eq 0 ]; then
                   body="${marker}"$'\n\n'"No ${CI_WORKFLOW_NAME} run has appeared on this pull request head after ${waited} minutes, so the merge gate has nothing to read and cannot decide anything."$'\n\n'"A pull request opened with the workflow token raises no events, which is the usual cause. The remedy is the framework App-token trigger: an empty commit pushed with the App identity, which is an event the forge does deliver. See the consumer skill, section: When no CI run appears on a bot pull request."
-                  gh pr comment "$pr_number" --repo "$REPO" --body "$body"
+                  gh pr comment "$pr_number" --repo "$REPO" --body "$body" >/dev/null ||
+                    echo "::warning::Could not comment on PR #$pr_number."
                 fi
                 # Every issue the pull request carries. This read an unset variable until WF-13, which
                 # `set -u` turned into the end of the whole sweep for the first such pull request.
@@ -1213,8 +1295,10 @@ jobs:
               fi
 
               IFS=$'\t' read -r ci_run_id ci_conclusion ci_finished <<<"$ci"
-              dispatch_gate_if_due "$pr_number" "$ci_run_id" "$ci_conclusion" "$ci_finished"
-            done
+              dispatch_gate_if_due "$pr_number" "$ci_run_id" "$ci_conclusion" "$ci_finished" ||
+                echo "::warning::PR #$pr_number could not be swept; the next sweep will try again."
+            done ||
+            echo "::warning::The pull request sweep did not reach the end of the list; the next sweep will try again."
       - name: Record the outcome
         if: always()
         uses: ./.github/actions/record-outcome
