@@ -1226,6 +1226,10 @@ jobs:
             bash ./.github/actions/retry-pending/release-stale-pending.sh ||
             echo "::warning::The stale pr-pending sweep did not finish; the merge-gate sweep below still runs."
 
+          # A parent whose children are all closed is finished; nothing else closes it (FR-146).
+          bash ./.github/actions/close-finished-parents/close-finished-parents.sh ||
+            echo "::warning::The finished-parent sweep did not finish; the merge-gate sweep below still runs."
+
           gh api --paginate "repos/$REPO/pulls?state=open&per_page=100" |
             jq -r --arg repo "$REPO" '
               .[]
