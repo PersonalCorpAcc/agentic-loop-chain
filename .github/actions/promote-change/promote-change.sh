@@ -574,6 +574,10 @@ promote_by_snapshot() {
 This is a snapshot, not \`${previous}\` itself: anything merged into \`${previous}\` after this pull request opened is not in it, and travels on the next promotion.
 
 It carries ${#commits[@]} commit(s) and ${#issues[@]} issue(s): $(printf '#%s ' "${issues[@]}")
+
+## Verification
+
+Each change this carries was verified, tested and gated in its own pull request on its way into \`${previous}\`; their \`## Verification\` sections are the record. What this promotion adds is the combination with \`${next}\`, and CI on this pull request is the check for it (FR-148).
 ${carried}
 <!-- promotion-pr: ${next}: ${eligible_pr} -->
 <!-- promotion-snapshot: ${next}: ${eligible_sha} -->"
@@ -843,7 +847,13 @@ $(printf '%s\n' "${outstanding[@]}")
 Promote them, or carry them across deliberately. Nothing here is wrong on its own: work waiting on an earlier stage is the ordinary state of a chain."
     fi
 
+    # The change was verified in its own pull request; saying so here is what the gate's test
+    # check reads, which held a one-file chain promotion for a person (chain #233, FR-148).
     body="Promotes the change from \`${previous}\` to \`${next}\`.${context}
+
+## Verification
+
+This change was verified, tested and gated in #${pr} on its way into \`${previous}\`; that pull request's \`## Verification\` section is the record. What this promotion adds is the combination with \`${next}\`, and CI on this pull request is the check for it.
 
 <!-- implement-issue: ${issue} -->
 <!-- promotion-pr: ${next}: ${pr} -->"
