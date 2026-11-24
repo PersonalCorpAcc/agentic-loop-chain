@@ -1215,7 +1215,9 @@ jobs:
           # Implement work nothing else will start: the label event was dropped, a failed run's
           # re-dispatch was lost, a run was cancelled. Read from state, not from an event, so it
           # does not depend on anything having finished (FR-132; loopscope #304 and #248).
+          # BASE_BRANCH: blockers land as the held-for-blockers sweep above says they do (FR-151).
           RETRY_ATTEMPTS="5" BOT_LOGIN="personalcorpacc-agentic-loop[bot]" \
+            BASE_BRANCH="dev" \
             bash ./.github/actions/retry-pending/restart-orphans.sh ||
             echo "::warning::The orphan restart did not finish; the merge-gate sweep below still runs."
           # The same for refine, which had no level-triggered exit at all (FR-140).
