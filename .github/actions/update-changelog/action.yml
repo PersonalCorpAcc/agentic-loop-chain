@@ -1,4 +1,4 @@
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/update-changelog/action.yml. Profile digest: ccaabc0b4a1d. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/update-changelog/action.yml. Profile digest: 971155b21f32. Update with `workflows update --force`; consumer edits may be overwritten.
 name: Update changelog
 description: >
   Prepend a changelog entry for a landed issue and commit it onto the branch the caller is

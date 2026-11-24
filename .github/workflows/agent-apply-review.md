@@ -1,5 +1,5 @@
 ---
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/workflows/agent-apply-review.md. Profile digest: ccaabc0b4a1d. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/workflows/agent-apply-review.md. Profile digest: 971155b21f32. Update with `workflows update --force`; consumer edits may be overwritten.
 env:
   # Printed by the prompt as the verification block. Consumers set their own commands.
   VERIFY_COMMANDS: "pnpm install --frozen-lockfile && pnpm run build && pnpm run test"

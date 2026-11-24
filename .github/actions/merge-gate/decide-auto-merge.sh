@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/merge-gate/decide-auto-merge.sh. Profile digest: ccaabc0b4a1d. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/merge-gate/decide-auto-merge.sh. Profile digest: 971155b21f32. Update with `workflows update --force`; consumer edits may be overwritten.
 #
 # Does a clean assessment of this pull request merge it, or does a person? Answered once,
 # beside the base it depends on, for the prompt, the merge step and the outcome line.

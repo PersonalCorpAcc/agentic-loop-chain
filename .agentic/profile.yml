@@ -112,7 +112,7 @@ crons:
 
 canary:
   # Off until the first hand-dispatched cycle is green; setting it starts T143's count.
-  cron: "17 4 * * *"
+  cron: "off"
   standInSecret: CANARY_STAND_IN_TOKEN
   # The dead-man's switch: these canaries must each have cycled in the last 26 hours (007 APP-03).
   peers: [PersonalCorpAcc/agentic-loop-canary, PersonalCorpAcc/agentic-loop-release]

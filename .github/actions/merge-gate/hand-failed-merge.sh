@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/merge-gate/hand-failed-merge.sh. Profile digest: ccaabc0b4a1d. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/merge-gate/hand-failed-merge.sh. Profile digest: 971155b21f32. Update with `workflows update --force`; consumer edits may be overwritten.
 #
 # The gate decided to merge and the merge itself failed (FR-139). Its `merge` verdict is already
 # on the pull request and is newer than CI, so no sweep looks at the pull request again: without
