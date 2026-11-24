@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/retry-pending/decide-implement-retry.sh. Profile digest: ccaabc0b4a1d. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/retry-pending/decide-implement-retry.sh. Profile digest: 971155b21f32. Update with `workflows update --force`; consumer edits may be overwritten.
 #
 # Is a failed implement worth repeating? (FR-053, FR-113) Reads what classify-incomplete.sh
 # found. An outage is retried at once, up to the park attempt; the daily AI-credit allowance is

@@ -1,4 +1,4 @@
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/templates/canary/canary-cycle.yml. Profile digest: ccaabc0b4a1d. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/templates/canary/canary-cycle.yml. Profile digest: 971155b21f32. Update with `workflows update --force`; consumer edits may be overwritten.
 name: Canary cycle
 
 # The canary: once a day, one fixed trivial change carried by the loop from an issue to the
@@ -13,8 +13,6 @@ name: Canary cycle
 # does not start the ten-day clock. Starting it is a decision, taken by setting the clock.
 
 on:
-  schedule:
-    - cron: "17 4 * * *"
   workflow_dispatch:
     inputs:
       red-team:
