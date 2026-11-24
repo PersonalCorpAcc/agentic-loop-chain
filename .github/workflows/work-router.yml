@@ -1172,8 +1172,9 @@ jobs:
             echo "::warning::The stale reservation sweep did not finish; the sweeps below still run."
 
           # Held for blockers (feature 007 X12): implement released an issue whose `Blocked by #M`
-          # was still open and said so with a marked comment. Once every blocker has closed, it is
-          # started again from here. Hourly is soon enough for work that was waiting anyway.
+          # was still open and said so with a marked comment. Once every blocker has landed -- its
+          # issue closed, or its change merged into the base branch implement starts from (FR-151)
+          # -- it is started again from here. Hourly is soon enough for work that was waiting anyway.
           # Only what nothing holds: a person's hold or review, a run's reservation and an open pull
           # request are theirs, and implement's reserve would strip review (FR-134).
           gh issue list --repo "$REPO" --label "$IMPLEMENT_LABEL" --state open --limit 100 --json number,labels \
@@ -1183,18 +1184,19 @@ jobs:
               held=$(gh api "repos/$REPO/issues/$issue/comments?per_page=100" --paginate \
                 --jq '.[] | select(.body | contains("<!-- implement-held-for-blockers -->")) | .id' 2>/dev/null | grep -c . || true)
               [ "${held:-0}" -gt 0 ] || continue
-              body=$(gh issue view "$issue" --repo "$REPO" --json body --jq '.body // ""' 2>/dev/null || echo "")
-              still_open=""
-              blockers=$(bash ./.github/actions/check-implement-eligibility/list-blockers.sh <<<"$body")
-              for blocker in $blockers; do
-                blocker_state=$(gh issue view "$blocker" --repo "$REPO" --json state --jq .state 2>/dev/null || echo UNKNOWN)
-                [ "$blocker_state" = "CLOSED" ] || still_open="${still_open} #${blocker}"
-              done
+              # Unreadable is not empty (FR-150): a body nobody could read is left for the next pass.
+              body=$(gh issue view "$issue" --repo "$REPO" --json body --jq '.body // ""' 2>/dev/null) || {
+                echo "::warning::#$issue: its body could not be read; leaving it for the next sweep."
+                continue
+              }
+              still_open=$(BASE_BRANCH="dev" \
+                bash ./.github/actions/check-implement-eligibility/open-blockers.sh <<<"$body") ||
+                still_open="(its blockers could not be read)"
               if [ -n "$still_open" ]; then
-                echo "#$issue is still blocked by${still_open}."
+                echo "#$issue is still blocked by ${still_open}."
                 continue
               fi
-              echo "Every blocker of #$issue has closed; starting its implementation."
+              echo "Every blocker of #$issue has landed; starting its implementation."
               gh api "repos/$REPO/actions/workflows/work-router.yml/dispatches" --method POST \
                 -f ref="$DEFAULT_BRANCH" -f "inputs[operation]=implement" -f "inputs[issue-number]=$issue" ||
                 echo "::warning::Could not start #$issue; the next sweep will try again."

@@ -116,6 +116,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           ISSUE_NUMBER: ${{ inputs.issue-number }}
+          BASE_BRANCH: "dev"
         run: bash ./.github/actions/check-implement-eligibility/check-eligibility.sh
 
       # Asked here, and not only in the router, because here is inside the concurrency

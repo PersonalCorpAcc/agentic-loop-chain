@@ -7,7 +7,7 @@
 # Not when it is closed, not when it carries the `future` label, and not while an issue it
 # names as `Blocked by #M` is still open (feature 007 X12).
 #
-# Environment: GH_TOKEN, ISSUE_NUMBER, GITHUB_REPOSITORY, GITHUB_OUTPUT.
+# Environment: GH_TOKEN, ISSUE_NUMBER, GITHUB_REPOSITORY, GITHUB_OUTPUT, BASE_BRANCH.
 
 set -euo pipefail
 
@@ -32,19 +32,15 @@ fi
 
 # Refine writes `Blocked by #M` when order genuinely matters (feature 007 X12). Nothing read
 # it, so a child could be implemented before the sibling it builds on had landed. A blocker
-# counts until it is closed; one that cannot be read counts as open.
+# counts until it has landed: closed, or merged into BASE_BRANCH (FR-151). One that cannot be
+# read counts as open.
 body=$(gh issue view "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --json body --jq '.body // ""')
-open_blockers=""
 # Assigned first, so a parser that cannot run stops the check rather than reading no blockers.
-blockers=$(bash "$(dirname "${BASH_SOURCE[0]}")/list-blockers.sh" <<<"$body")
-for blocker in $blockers; do
-  blocker_state=$(gh issue view "$blocker" --repo "$GITHUB_REPOSITORY" --json state --jq .state 2>/dev/null || echo UNKNOWN)
-  [ "$blocker_state" = "CLOSED" ] || open_blockers="${open_blockers} #${blocker}"
-done
+open_blockers=$(bash "$(dirname "${BASH_SOURCE[0]}")/open-blockers.sh" <<<"$body")
 if [ -n "$open_blockers" ]; then
   echo "eligible=false" >> "$GITHUB_OUTPUT"
-  echo "blocked_by=${open_blockers# }" >> "$GITHUB_OUTPUT"
-  echo "::notice::Issue #$ISSUE_NUMBER is blocked by${open_blockers}; it starts when they close."
+  echo "blocked_by=${open_blockers}" >> "$GITHUB_OUTPUT"
+  echo "::notice::Issue #$ISSUE_NUMBER is blocked by ${open_blockers}; it starts when they land."
   exit 0
 fi
 
