@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/check-implement-eligibility/hold-for-blockers.sh. Profile digest: ccaabc0b4a1d. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/check-implement-eligibility/hold-for-blockers.sh. Profile digest: 971155b21f32. Update with `workflows update --force`; consumer edits may be overwritten.
 #
 # Hold an issue for its blockers (feature 007 X12): release the working label, because an issue
 # must not look in progress with nothing running, and say once what it is waiting for. It keeps
