@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/compare-shadow-verdicts/compare-shadow-verdicts.sh. Profile digest: ccaabc0b4a1d. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/compare-shadow-verdicts/compare-shadow-verdicts.sh. Profile digest: 971155b21f32. Update with `workflows update --force`; consumer edits may be overwritten.
 #
 # How often the merge gate, run in shadow on people's pull requests, agreed with the people
 # (feature 007 X11, FR-027). For every pull request a person opened that closed in the last

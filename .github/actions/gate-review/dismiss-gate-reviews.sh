@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/gate-review/dismiss-gate-reviews.sh. Profile digest: ccaabc0b4a1d. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/gate-review/dismiss-gate-reviews.sh. Profile digest: 971155b21f32. Update with `workflows update --force`; consumer edits may be overwritten.
 #
 # Under `gate.mode: review` the gate's own change requests are answered by apply-review, and when
 # the gate finds the pull request clean they are done with (feature 007 X08, FR-024). They are
