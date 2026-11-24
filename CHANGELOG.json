@@ -1,6 +1,34 @@
 {
   "changes": [
     {
+      "timestamp": "2026-11-23T11:32:12Z",
+      "issue": 192,
+      "title": "[canary] Daily cycle, run 45160069960",
+      "summary": "Canary: add run-45160069960 marker file",
+      "commit": "4241183"
+    },
+    {
+      "timestamp": "2026-11-22T13:04:16Z",
+      "issue": 161,
+      "title": "[canary] Daily cycle, run 45022798259",
+      "summary": "Canary: add daily cycle run file for run 45022798259",
+      "commit": "090ab37"
+    },
+    {
+      "timestamp": "2026-11-21T14:26:06Z",
+      "issue": 122,
+      "title": "[canary] Daily cycle, run 44909811768",
+      "summary": "Add canary file for run 44909811768",
+      "commit": "490113c"
+    },
+    {
+      "timestamp": "2026-11-21T13:50:07Z",
+      "issue": 99,
+      "title": "[canary] Daily cycle, run 44904693490",
+      "summary": "Add canary file for run 44904693490",
+      "commit": "23b8997"
+    },
+    {
       "timestamp": "2026-11-21T13:28:07Z",
       "issue": 92,
       "title": "[canary] Daily cycle, run 44903634334",
