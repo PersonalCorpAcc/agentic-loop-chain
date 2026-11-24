@@ -8,6 +8,12 @@
 # cycle no older than MAX_AGE_HOURS. Three canaries would all have to stop at once for the
 # silence to go unnoticed.
 #
+# 36 hours, not 26 (FR-143): GitHub starts a daily cron hours late, and by a different amount
+# each day. The canaries' 03:17, 04:17 and 05:17 cycles started between 10:55 and 16:02 UTC
+# (21-24/11/2026), so a healthy peer's last success was up to 29 hours old when another canary
+# checked it, and the 26-hour limit called it quiet. 36 hours covers that spread; a peer whose
+# cycle did not run for a day is still named at the next check.
+#
 # Writes one line per quiet peer to stdout and exits 1 when there is any; the caller keeps one
 # issue about it. Reads only, with a token that can see the peers' Actions runs.
 
@@ -15,7 +21,7 @@ set -euo pipefail
 
 : "${PEERS:?check-peers: PEERS is required, as owner/name,owner/name}"
 : "${GH_TOKEN:?check-peers: GH_TOKEN is required}"
-MAX_AGE_HOURS="${MAX_AGE_HOURS:-26}"
+MAX_AGE_HOURS="${MAX_AGE_HOURS:-36}"
 WORKFLOW_FILE="${WORKFLOW_FILE:-canary-cycle.yml}"
 NOW="${NOW:-$(date -u +%s)}"
 
