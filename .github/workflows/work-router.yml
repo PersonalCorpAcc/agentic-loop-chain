@@ -1185,7 +1185,8 @@ jobs:
               [ "${held:-0}" -gt 0 ] || continue
               body=$(gh issue view "$issue" --repo "$REPO" --json body --jq '.body // ""' 2>/dev/null || echo "")
               still_open=""
-              for blocker in $(grep -oiE 'blocked by #[0-9]+' <<<"$body" | grep -oE '[0-9]+' | sort -un || true); do
+              blockers=$(bash ./.github/actions/check-implement-eligibility/list-blockers.sh <<<"$body")
+              for blocker in $blockers; do
                 blocker_state=$(gh issue view "$blocker" --repo "$REPO" --json state --jq .state 2>/dev/null || echo UNKNOWN)
                 [ "$blocker_state" = "CLOSED" ] || still_open="${still_open} #${blocker}"
               done

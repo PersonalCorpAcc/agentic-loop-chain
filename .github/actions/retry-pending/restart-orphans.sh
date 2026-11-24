@@ -78,7 +78,12 @@ labeller_trusted() {
 
 open_blockers() {
   local body="$1" blocker state still=""
-  for blocker in $(grep -oiE 'blocked by #[0-9]+' <<<"$body" | grep -oE '[0-9]+' | sort -un || true); do
+  local blockers
+  # Called in a command substitution, where errexit does not reach: a parser that cannot run
+  # counts as a blocker, so nothing is restarted on a body nobody could read.
+  blockers=$(bash "$(dirname "${BASH_SOURCE[0]}")/../check-implement-eligibility/list-blockers.sh" <<<"$body") ||
+    { printf '%s' "(its blockers could not be read)"; return 0; }
+  for blocker in $blockers; do
     state="$(gh issue view "$blocker" --repo "$REPO" --json state --jq .state 2>/dev/null || echo UNKNOWN)"
     [ "$state" = "CLOSED" ] || still="${still} #${blocker}"
   done
