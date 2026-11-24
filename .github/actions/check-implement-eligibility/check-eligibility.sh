@@ -35,7 +35,9 @@ fi
 # counts until it is closed; one that cannot be read counts as open.
 body=$(gh issue view "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --json body --jq '.body // ""')
 open_blockers=""
-for blocker in $(grep -oiE 'blocked by #[0-9]+' <<<"$body" | grep -oE '[0-9]+' | sort -un || true); do
+# Assigned first, so a parser that cannot run stops the check rather than reading no blockers.
+blockers=$(bash "$(dirname "${BASH_SOURCE[0]}")/list-blockers.sh" <<<"$body")
+for blocker in $blockers; do
   blocker_state=$(gh issue view "$blocker" --repo "$GITHUB_REPOSITORY" --json state --jq .state 2>/dev/null || echo UNKNOWN)
   [ "$blocker_state" = "CLOSED" ] || open_blockers="${open_blockers} #${blocker}"
 done

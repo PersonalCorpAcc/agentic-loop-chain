@@ -1505,7 +1505,7 @@ fi
 MERGE_GATE_MD="${HERE}/../../workflows/agent-merge-gate.md"
 for check in \
   "ROUTE=refine ROUTE_LABEL=@@refine work nothing holds is never restarted (FR-140)" \
-  "bash ./.github/actions/retry-pending/release-stale-pending.sh ||@@a pending-pull-request label whose pull request closed is never released (FR-141)"   "bash ./.github/actions/close-finished-parents/close-finished-parents.sh ||@@a parent whose children are all closed is never closed (FR-146)" \
+  "bash ./.github/actions/retry-pending/release-stale-pending.sh ||@@a pending-pull-request label whose pull request closed is never released (FR-141)"   "bash ./.github/actions/close-finished-parents/close-finished-parents.sh ||@@a parent whose children are all closed is never closed (FR-146)"   "blockers=\$(bash ./.github/actions/check-implement-eligibility/list-blockers.sh@@the held-for-blockers sweep does not read blockers written as a list (FR-147)" \
   "group: reconcile-bot-pr-runs@@two reconcile belts can overlap and double every marker (FR-136)" \
   "run: bash ./.github/actions/nudge-reconcile/nudge-reconcile.sh@@no router run starts the reconcile belt when the schedule is dropped (FR-138)" \
   "          - retriage@@the mode input refuses retriage, so an outside collaborator's reply is lost with a 422 (FR-137)" \
