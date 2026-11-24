@@ -967,6 +967,15 @@ timeout-minutes: 90
    empty there is none: fix the formatting the linter reports by hand. Never create a pull
    request that has lint errors.
 
+   **Run the behaviour the change exists for, when your sandbox can.** Passing unit tests are
+   not the whole check when the issue describes what the running program does: a server that
+   reads a setting at start-up, an endpoint's response, a command's output. Start it here,
+   with the setting the issue names, and exercise that behaviour -- `curl` the local endpoint,
+   run the command, read the start-up log -- then stop it. Report what you ran under `Tested:`.
+   The merge gate accepts a `Not tested:` line only for a live run against an outside service
+   your sandbox has no credentials or network for; anything this sandbox could have run, it
+   sends to a person (FR-149).
+
 5. **There is no pull request for this issue yet, so you create one.** The router checked
    before this run started and runs this worker only when none is open. Do not search for one.
 
