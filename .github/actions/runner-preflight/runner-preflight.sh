@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/runner-preflight/runner-preflight.sh. Profile digest: ccaabc0b4a1d. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/runner-preflight/runner-preflight.sh. Profile digest: 971155b21f32. Update with `workflows update --force`; consumer edits may be overwritten.
 #
 # Is there an online runner for every self-hosted tier the profile names? (FR-070, FR-058)
 #

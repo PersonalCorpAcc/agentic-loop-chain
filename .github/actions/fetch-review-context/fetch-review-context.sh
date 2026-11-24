@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/fetch-review-context/fetch-review-context.sh. Profile digest: ccaabc0b4a1d. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/fetch-review-context/fetch-review-context.sh. Profile digest: 971155b21f32. Update with `workflows update --force`; consumer edits may be overwritten.
 #
 # Everything apply-review's agent reads about a pull request's review, written to disk before it
 # starts. A reviewer often makes one point across several comments, so the agent needs the whole

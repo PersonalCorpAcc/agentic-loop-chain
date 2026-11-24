@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/resolve-change-linkage/resolve-change-linkage.sh. Profile digest: ccaabc0b4a1d. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/resolve-change-linkage/resolve-change-linkage.sh. Profile digest: 971155b21f32. Update with `workflows update --force`; consumer edits may be overwritten.
 #
 # Which pull request and branch belong to this change, read from the comment the App wrote
 # (FR-064).

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/merge-gate/explain-refused-merge.sh. Profile digest: ccaabc0b4a1d. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/merge-gate/explain-refused-merge.sh. Profile digest: 971155b21f32. Update with `workflows update --force`; consumer edits may be overwritten.
 #
 # The gate approved a pull request the forge would not merge or queue: say why on it.
 #

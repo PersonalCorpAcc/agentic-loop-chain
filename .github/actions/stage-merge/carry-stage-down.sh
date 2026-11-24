@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/stage-merge/carry-stage-down.sh. Profile digest: ccaabc0b4a1d. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/stage-merge/carry-stage-down.sh. Profile digest: 971155b21f32. Update with `workflows update --force`; consumer edits may be overwritten.
 #
 # A merge into a later stage breaks ancestry with the stages below it, so the run that caused it
 # dispatches the sync-stages route rather than leaving it to the clock (FR-079, FR-086). Nothing

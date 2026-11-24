@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/merge-gate/refuse-closing-commits.sh. Profile digest: ccaabc0b4a1d. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/merge-gate/refuse-closing-commits.sh. Profile digest: 971155b21f32. Update with `workflows update --force`; consumer edits may be overwritten.
 #
 # Under rebase every commit message lands on every stage, so a closing keyword in one closes
 # the issue at the first stage (FR-030). Fails, naming the commits, when any carries one.

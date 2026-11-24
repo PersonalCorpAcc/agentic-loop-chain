@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/gate-review/post-gate-review.sh. Profile digest: ccaabc0b4a1d. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/gate-review/post-gate-review.sh. Profile digest: 971155b21f32. Update with `workflows update --force`; consumer edits may be overwritten.
 #
 # The merge gate's change request under `gate.mode: review` (feature 007 X08, FR-024): its
 # severity-ranked findings as a pull-request review that requests changes, submitted with the

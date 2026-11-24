@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/retry-pending/restart-orphans.sh. Profile digest: ccaabc0b4a1d. Update with `workflows update --force`; consumer edits may be overwritten.
+# Managed by @software-factory-dev/cli@0.5.1. Source: loops/actions/retry-pending/restart-orphans.sh. Profile digest: 971155b21f32. Update with `workflows update --force`; consumer edits may be overwritten.
 #
 # Start implement or refine work that nothing else will ever start (FR-132; FR-140 for refine).
 # The reconcile belt runs this after retry-pending, on every pass, once per route: ROUTE is
